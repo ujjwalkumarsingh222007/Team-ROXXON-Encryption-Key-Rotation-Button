@@ -1,0 +1,12 @@
+{
+  "sql": "SELECT * FROM 'esp32/key_rotation/request'",
+  "ruleDisabled": false,
+  "awsIotSqlVersion": "2016-03-23",
+  "actions": [
+    {
+      "lambda": {
+        "functionArn": "arn:aws:lambda:REGION:ACCOUNT_ID:function:ESP32-KeyRotationHandler"
+      }
+    }
+  ]
+}

@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Encryption Key Rotation | ESP32 + AWS</title>
+    <!-- Inter & JetBrains Mono Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- TOAST NOTIFICATION STACK -->
+    <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+    <!-- REAL AWS ROTATION CONFIRMATION MODAL -->
+    <div class="modal-backdrop" id="realConfirmModal" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-icon-warning"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                <div>
+                    <h3 class="modal-title">Real AWS KMS Key Rotation</h3>
+                    <p class="modal-subtitle">Confirm Live Cryptographic Operation</p>
+                </div>
+            </div>
+            <div class="modal-body">
+                <p>This will invoke the AWS KMS API (<code>kms:RotateKeyOnDemand</code>) on your active AWS Customer Managed Key.</p>
+                <div class="modal-details-box">
+                    <div class="modal-kv-row">
+                        <span>Target KMS Key ID:</span>
+                        <strong class="font-mono" id="modalKeyId">Loading...</strong>
+                    </div>
+                    <div class="modal-kv-row">
+                        <span>Key Spec:</span>
+                        <span>Symmetric 256-bit AES-GCM</span>
+                    </div>
+                    <div class="modal-kv-row">
+                        <span>Action:</span>
+                        <span class="text-forest font-semibold">Generate new backing key material</span>
+                    </div>
+                </div>
+                <p class="modal-safety-note"><i class="fa-solid fa-shield-halved"></i> Note: Key ID remains the same. Secrets are protected in AWS Hardware Security Modules.</p>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary-clean" id="modalBtnCancel">Cancel</button>
+                <button class="btn btn-forest" id="modalBtnContinue"><i class="fa-solid fa-bolt"></i> Continue with AWS Rotation</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="app-layout">
+        <!-- SIDEBAR NAVIGATION (5 CLEAN TABS) -->
+        <aside class="sidebar">
+            <div class="sidebar-brand">
+                <div class="brand-logo-badge">
+                    <i class="fa-solid fa-key"></i>
+                </div>
+                <div class="brand-text">
+                    <span class="brand-name">Key Rotation</span>
+                    <span class="brand-tag">ESP32 &middot; AWS</span>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button class="nav-btn active" data-page="control" id="navControl">
+                    <i class="fa-solid fa-gamepad"></i>
+                    <span>CONTROL</span>
+                </button>
+                <button class="nav-btn" data-page="dashboard" id="navDashboard">
+                    <i class="fa-solid fa-chart-line"></i>
+                    <span>DASHBOARD</span>
+                </button>
+                <button class="nav-btn" data-page="history" id="navHistory">
+                    <i class="fa-solid fa-clock-rotate-left"></i>
+                    <span>HISTORY</span>
+                </button>
+                <button class="nav-btn" data-page="device" id="navDevice">
+                    <i class="fa-solid fa-microchip"></i>
+                    <span>DEVICE</span>
+                </button>
+                <button class="nav-btn" data-page="about" id="navAbout">
+                    <i class="fa-solid fa-circle-info"></i>
+                    <span>ABOUT</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="device-status-pill" id="sidebarDevicePill">
+                    <span class="status-dot green" id="sidebarDot"></span>
+                    <div class="pill-info">
+                        <strong id="sidebarDeviceId">ESP32-001</strong>
+                        <span id="sidebarStatusText">Connected</span>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- MAIN VIEWPORT -->
+        <main class="main-viewport">
+
+            <!-- ==================== PAGE 1: CONTROL ==================== -->
+            <section class="page-view active" id="page-control">
+                <!-- HEADER -->
+                <header class="page-header">
+                    <div>
+                        <h1 class="page-title">Encryption Key Rotation</h1>
+                        <p class="page-subtitle">Rotate the device encryption key via AWS IoT Core, Lambda, and KMS.</p>
+                    </div>
+                    
+                    <!-- MODE SELECTOR PILL -->
+                    <div class="mode-toggle-wrap">
+                        <div class="mode-toggle-group">
+                            <button class="mode-btn active" id="modeBtnDemo" title="Simulated AWS pipeline without real cloud costs">
+                                <i class="fa-solid fa-flask"></i> DEMO MODE
+                            </button>
+                            <button class="mode-btn" id="modeBtnReal" title="Real AWS IoT Core & KMS Key Rotation">
+                                <i class="fa-solid fa-cloud"></i> REAL AWS
+                            </button>
+                        </div>
+                    </div>
+                </header>
+
+                <!-- BANNER FOR ERRORS / CONFIG -->
+                <div class="notice-banner" id="configNoticeBanner" style="display: none;">
+                    <i class="fa-solid fa-circle-info banner-icon"></i>
+                    <div class="banner-body">
+                        <strong id="bannerTitle">AWS Not Configured</strong>
+                        <span id="bannerMsg">Running in Demo Simulation mode. Follow AWS_SETUP.md to connect your real AWS KMS key.</span>
+                    </div>
+                </div>
+
+                <!-- 1. PROMINENT 5-STAGE PIPELINE -->
+                <div class="content-panel pipeline-panel">
+                    <div class="panel-header-row">
+                        <h2 class="panel-title"><i class="fa-solid fa-diagram-project text-forest"></i> Key Rotation Pipeline</h2>
+                        <span class="pipeline-live-badge" id="pipelineLiveMsg">Ready to rotate</span>
+                    </div>
+
+                    <!-- 5-STAGE HORIZONTAL TRACK -->
+                    <div class="pipeline-track">
+                        <!-- Stage 1: ESP32 -->
+                        <div class="pipe-step ready" id="pstage-esp">
+                            <div class="pipe-icon-box">
+                                <i class="fa-solid fa-microchip"></i>
+                            </div>
+                            <div class="pipe-step-num">01</div>
+                            <div class="pipe-step-name">ESP32</div>
+                            <div class="pipe-step-desc">Physical Button</div>
+                            <div class="pipe-status-tag" id="pstat-esp">Ready</div>
+                        </div>
+
+                        <div class="pipe-connector"><i class="fa-solid fa-arrow-right"></i></div>
+
+                        <!-- Stage 2: AWS IoT Core -->
+                        <div class="pipe-step waiting" id="pstage-iot">
+                            <div class="pipe-icon-box">
+                                <i class="fa-solid fa-tower-broadcast"></i>
+                            </div>
+                            <div class="pipe-step-num">02</div>
+                            <div class="pipe-step-name">AWS IoT Core</div>
+                            <div class="pipe-step-desc">MQTT Request</div>
+                            <div class="pipe-status-tag" id="pstat-iot">Waiting</div>
+                        </div>
+
+                        <div class="pipe-connector"><i class="fa-solid fa-arrow-right"></i></div>
+
+                        <!-- Stage 3: AWS Lambda -->
+                        <div class="pipe-step waiting" id="pstage-lambda">
+                            <div class="pipe-icon-box">
+                                <i class="fa-solid fa-bolt"></i>
+                            </div>
+                            <div class="pipe-step-num">03</div>
+                            <div class="pipe-step-name">Lambda</div>
+                            <div class="pipe-step-desc">Process Request</div>
+                            <div class="pipe-status-tag" id="pstat-lambda">Waiting</div>
+                        </div>
+
+                        <div class="pipe-connector"><i class="fa-solid fa-arrow-right"></i></div>
+
+                        <!-- Stage 4: AWS KMS -->
+                        <div class="pipe-step waiting" id="pstage-kms">
+                            <div class="pipe-icon-box">
+                                <i class="fa-solid fa-shield-halved"></i>
+                            </div>
+                            <div class="pipe-step-num">04</div>
+                            <div class="pipe-step-name">AWS KMS</div>
+                            <div class="pipe-step-desc">Rotate Key Material</div>
+                            <div class="pipe-status-tag" id="pstat-kms">Waiting</div>
+                        </div>
+
+                        <div class="pipe-connector"><i class="fa-solid fa-arrow-right"></i></div>
+
+                        <!-- Stage 5: OLED -->
+                        <div class="pipe-step ready" id="pstage-oled">
+                            <div class="pipe-icon-box">
+                                <i class="fa-solid fa-tv"></i>
+                            </div>
+                            <div class="pipe-step-num">05</div>
+                            <div class="pipe-step-name">ESP32 OLED</div>
+                            <div class="pipe-step-desc">Display Result</div>
+                            <div class="pipe-status-tag" id="pstat-oled">Ready</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. MAIN ACTION WORKBENCH (TWO-COLUMN) -->
+                <div class="control-grid-2">
+                    <!-- LEFT: ROTATION CONTROL -->
+                    <div class="content-panel main-action-panel">
+                        <div class="device-tag-lead">
+                            <span class="status-dot green" id="ctrlDot"></span>
+                            <strong id="ctrlDeviceTag">ESP32-001</strong>
+                        </div>
+                        <h2 class="panel-heading">Rotate Encryption Key</h2>
+                        <p class="panel-desc">Press the button below to initiate an on-demand key rotation.</p>
+
+                        <!-- LARGE TACTILE BUTTON -->
+                        <button class="btn-rotate-forest" id="btnRotate">
+                            <span class="btn-spinner-icon" id="btnSpinner" style="display: none;"></span>
+                            <span id="btnLabel">ROTATE ENCRYPTION KEY</span>
+                        </button>
+
+                        <!-- HARDWARE TEASER -->
+                        <div class="hardware-teaser-box">
+                            <div class="esp-board-graphic">
+                                <div class="antenna-gold"></div>
+                                <div class="chip-black">
+                                    <span>ESP32</span>
+                                    <small>WROOM-32</small>
+                                </div>
+                                <div class="tact-button-spot">
+                                    <span class="tact-btn-inner"></span>
+                                </div>
+                            </div>
+                            <div class="hardware-caption">
+                                <i class="fa-solid fa-circle-check text-forest"></i>
+                                <span>Hardware Button (GPIO 0) triggers the cloud pipeline.</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RIGHT: ESP32 OLED SIMULATOR -->
+                    <div class="content-panel oled-panel">
+                        <h2 class="panel-heading">ESP32 OLED</h2>
+                        <div class="oled-housing">
+                            <div class="oled-matte-bezel">
+                                <div class="oled-screen" id="oledScreen">
+                                    <div class="oled-header-text">KEY ROTATOR</div>
+                                    <div class="oled-divider">----------------</div>
+                                    <div class="oled-screen-body">
+                                        <div class="oled-line-1" id="oledLine1">READY</div>
+                                        <div class="oled-line-2" id="oledLine2">PRESS BUTTON</div>
+                                        <div class="oled-line-3" id="oledLine3" style="font-size: 11px; margin-top: 6px; color: #94A3B8;">VER: v01</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="oled-spec-footer">
+                            <span>SSD1306 128&times;64</span> &middot; <span>I&sup2;C</span> &middot; <span class="text-forest"><i class="fa-solid fa-circle text-forest status-mini-dot"></i> Connected</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 3. LOWER ROW: SYSTEM STATUS & CURRENT KEY -->
+                <div class="control-grid-2">
+                    <!-- SYSTEM STATUS COMPACT PANEL -->
+                    <div class="content-panel">
+                        <h2 class="panel-heading">System Status</h2>
+                        <div class="status-clean-list">
+                            <div class="status-item-row">
+                                <span class="status-item-name">ESP32 Device</span>
+                                <span class="status-item-val" id="statValEsp"><span class="status-dot green"></span> Connected</span>
+                            </div>
+                            <div class="status-item-row">
+                                <span class="status-item-name">AWS IoT Core</span>
+                                <span class="status-item-val" id="statValIot"><span class="status-dot blue"></span> Simulation</span>
+                            </div>
+                            <div class="status-item-row">
+                                <span class="status-item-name">AWS Lambda</span>
+                                <span class="status-item-val" id="statValLambda"><span class="status-dot blue"></span> Simulation</span>
+                            </div>
+                            <div class="status-item-row">
+                                <span class="status-item-name">AWS KMS</span>
+                                <span class="status-item-val" id="statValKms"><span class="status-dot blue"></span> Simulation</span>
+                            </div>
+                            <div class="status-item-row">
+                                <span class="status-item-name">OLED Screen</span>
+                                <span class="status-item-val" id="statValOled"><span class="status-dot green"></span> Connected</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CURRENT ENCRYPTION KEY PANEL (REAL KMS SPEC) -->
+                    <div class="content-panel">
+                        <h2 class="panel-heading">KMS Key Details</h2>
+                        <div class="key-summary-grid">
+                            <div class="key-field">
+                                <span class="key-label">KMS Key ID</span>
+                                <div class="key-value font-mono text-truncate" id="currentKeyId">450b3db5-8fbb-4693-9c95-0cc1531adb0c</div>
+                            </div>
+                            <div class="key-field">
+                                <span class="key-label">Status</span>
+                                <span class="badge badge-success" id="currentKeyStatus"><i class="fa-solid fa-circle text-forest status-mini-dot"></i> Active</span>
+                            </div>
+                            <div class="key-field">
+                                <span class="key-label">Key Material Version</span>
+                                <div class="key-value font-mono" id="currentKeyVersion">v01</div>
+                            </div>
+                            <div class="key-field">
+                                <span class="key-label">Last Rotated</span>
+                                <div class="key-value" id="currentKeyLastRot">Today, 10:05</div>
+                            </div>
+                        </div>
+
+                        <div class="key-copy-actions">
+                            <button class="btn btn-secondary-clean btn-sm" id="btnCopyKey">
+                                <i class="fa-regular fa-copy"></i> Copy Key ID
+                            </button>
+                            <span class="copy-feedback-msg" id="copyFeedbackMsg" style="display: none;">
+                                <i class="fa-solid fa-check text-forest"></i> Key ID copied to clipboard
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ==================== PAGE 2: DASHBOARD ==================== -->
+            <section class="page-view" id="page-dashboard">
+                <!-- HEADER -->
+                <header class="page-header">
+                    <div>
+                        <h1 class="page-title">Rotation Dashboard</h1>
+                        <p class="page-subtitle">Real-time execution details and event telemetry.</p>
+                    </div>
+                    <!-- DEMO SCENARIO DROPDOWN -->
+                    <div class="scenario-pill-box">
+                        <span class="scenario-lead">Demo Scenario:</span>
+                        <select id="scenarioSelect" class="scenario-select">
+                            <option value="none">Normal Success</option>
+                            <option value="iot_timeout">IoT Connection Failure</option>
+                            <option value="lambda_error">Lambda Execution Failure</option>
+                            <option value="kms_error">KMS Permission Denied</option>
+                        </select>
+                    </div>
+                </header>
+
+                <!-- SUMMARY METRIC STRIP -->
+                <div class="content-panel summary-metric-strip">
+                    <div class="strip-item">
+                        <span class="strip-lbl">ROTATION</span>
+                        <span class="strip-val font-mono" id="dashRotNum">#01</span>
+                    </div>
+                    <div class="strip-divider"></div>
+                    <div class="strip-item">
+                        <span class="strip-lbl">STATUS</span>
+                        <span class="badge badge-success" id="dashRotStatus">READY</span>
+                    </div>
+                    <div class="strip-divider"></div>
+                    <div class="strip-item">
+                        <span class="strip-lbl">STARTED</span>
+                        <span class="strip-val" id="dashRotStarted">--:--:--</span>
+                    </div>
+                    <div class="strip-divider"></div>
+                    <div class="strip-item">
+                        <span class="strip-lbl">COMPLETED</span>
+                        <span class="strip-val" id="dashRotCompleted">--:--:--</span>
+                    </div>
+                    <div class="strip-divider"></div>
+                    <div class="strip-item">
+                        <span class="strip-lbl">DURATION</span>
+                        <span class="strip-val" id="dashRotDuration">--</span>
+                    </div>
+                </div>
+
+                <!-- VERTICAL EXECUTION TIMELINE & REQUEST DETAILS -->
+                <div class="control-grid-2">
+                    <!-- EXECUTION TIMELINE -->
+                    <div class="content-panel">
+                        <h2 class="panel-heading">Execution Details</h2>
+                        <div class="vertical-timeline" id="executionTimeline">
+                            <div class="timeline-step done" id="tstep-btn">
+                                <span class="tstep-dot">✓</span>
+                                <div class="tstep-text">Button pressed</div>
+                            </div>
+                            <div class="timeline-step done" id="tstep-esp">
+                                <span class="tstep-dot">✓</span>
+                                <div class="tstep-text">ESP32 request created</div>
+                            </div>
+                            <div class="timeline-step done" id="tstep-iot">
+                                <span class="tstep-dot">✓</span>
+                                <div class="tstep-text">AWS IoT Core received request</div>
+                            </div>
+                            <div class="timeline-step done" id="tstep-lambda">
+                                <span class="tstep-dot">✓</span>
+                                <div class="tstep-text">Lambda triggered</div>
+                            </div>
+                            <div class="timeline-step done" id="tstep-kms">
+                                <span class="tstep-dot">✓</span>
+                                <div class="tstep-text">KMS rotation completed</div>
+                            </div>
+                            <div class="timeline-step done" id="tstep-resp">
+                                <span class="tstep-dot">✓</span>
+                                <div class="tstep-text">Response returned</div>
+                            </div>
+                            <div class="timeline-step done" id="tstep-esprcv">
+                                <span class="tstep-dot">✓</span>
+                                <div class="tstep-text">ESP32 received response</div>
+                            </div>
+                            <div class="timeline-step done" id="tstep-oled">
+                                <span class="tstep-dot">✓</span>
+                                <div class="tstep-text">OLED updated</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- REQUEST & RESPONSE DETAILS -->
+                    <div class="content-panel">
+                        <h2 class="panel-heading">Request Details</h2>
+                        <div class="request-details-box">
+                            <div class="req-row">
+                                <span class="req-label">Device ID</span>
+                                <span class="req-val font-mono">ESP32-001</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Request Topic</span>
+                                <span class="req-val font-mono">esp32/key_rotation/request</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Request ID</span>
+                                <span class="req-val font-mono" id="reqIdVal">ROT-INIT</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Response Topic</span>
+                                <span class="req-val font-mono">esp32/key_rotation/response</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Result Status</span>
+                                <span class="badge badge-success" id="respStatusBadge">SUCCESS</span>
+                            </div>
+                        </div>
+
+                        <h2 class="panel-heading mt-4">Live Activity Feed</h2>
+                        <div class="activity-feed-list" id="activityFeedList">
+                            <!-- Populated dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ==================== PAGE 3: HISTORY ==================== -->
+            <section class="page-view" id="page-history">
+                <header class="page-header">
+                    <div>
+                        <h1 class="page-title">Rotation History</h1>
+                        <p class="page-subtitle">Complete audit trail of all encryption key rotations.</p>
+                    </div>
+                    <button class="btn btn-secondary-clean btn-sm" id="btnRefreshHistory">
+                        <i class="fa-solid fa-rotate-right"></i> Refresh
+                    </button>
+                </header>
+
+                <div class="content-panel">
+                    <div class="table-scroll-wrap">
+                        <table class="clean-data-table" id="historyTableFull">
+                            <thead>
+                                <tr>
+                                    <th>Timestamp</th>
+                                    <th>Device</th>
+                                    <th>Request ID</th>
+                                    <th>KMS Key ID</th>
+                                    <th>Key Version</th>
+                                    <th>Status</th>
+                                    <th>Mode</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ==================== PAGE 4: DEVICE ==================== -->
+            <section class="page-view" id="page-device">
+                <header class="page-header">
+                    <div>
+                        <h1 class="page-title">ESP32 Hardware Details</h1>
+                        <p class="page-subtitle">Hardware telemetry, pin configurations, and network status.</p>
+                    </div>
+                </header>
+
+                <div class="control-grid-2">
+                    <!-- HARDWARE SPECS -->
+                    <div class="content-panel">
+                        <h2 class="panel-heading">Hardware Specifications</h2>
+                        <div class="request-details-box">
+                            <div class="req-row">
+                                <span class="req-label">Device Model</span>
+                                <span class="req-val">ESP32-WROOM-32D (32-bit Dual-Core)</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Device ID</span>
+                                <span class="req-val font-mono" id="devPropId">ESP32-001</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">MAC Address</span>
+                                <span class="req-val font-mono" id="devPropMac">24:6F:28:7A:B4:9C</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Firmware</span>
+                                <span class="req-val font-mono">v2.4.1-rotator-release</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Push Button Pin</span>
+                                <span class="req-val font-mono">GPIO 0 (Boot Button / Pull-Up)</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">OLED Interface</span>
+                                <span class="req-val font-mono">I2C (SDA: GPIO 21, SCL: GPIO 22)</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- NETWORK & MQTT STATUS -->
+                    <div class="content-panel">
+                        <h2 class="panel-heading">Connectivity & Security</h2>
+                        <div class="request-details-box">
+                            <div class="req-row">
+                                <span class="req-label">Wi-Fi Status</span>
+                                <span class="badge badge-success" id="devWifiStatus"><i class="fa-solid fa-circle text-forest status-mini-dot"></i> Connected</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Wi-Fi RSSI</span>
+                                <span class="req-val">-54 dBm (Good signal)</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">MQTT Transport</span>
+                                <span class="req-val">TLS 1.2 / TLS 1.3 (Port 8883)</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Authentication</span>
+                                <span class="req-val">X.509 Client Certificate</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">Button Status</span>
+                                <span class="badge badge-secondary" id="devButtonStatus">IDLE</span>
+                            </div>
+                            <div class="req-row">
+                                <span class="req-label">OLED Screen</span>
+                                <span class="badge badge-success" id="devOledStatus">Active</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ==================== PAGE 5: ABOUT ==================== -->
+            <section class="page-view" id="page-about">
+                <header class="page-header">
+                    <div>
+                        <h1 class="page-title">About the Project</h1>
+                        <p class="page-subtitle">Architecture overview and security workflow.</p>
+                    </div>
+                </header>
+
+                <div class="content-panel">
+                    <h2 class="panel-heading">How Encryption Key Rotation Works</h2>
+                    <p class="about-text">
+                        This system demonstrates a secure, automated IoT cryptographic lifecycle. When an authorized physical button on the ESP32 is pressed, the device securely signals AWS IoT Core without exposing any secret keys.
+                    </p>
+
+                    <div class="about-flow-grid">
+                        <div class="about-card">
+                            <div class="about-card-icon"><i class="fa-solid fa-microchip"></i></div>
+                            <h3>1. ESP32 Trigger</h3>
+                            <p>The push button on GPIO 0 triggers a signed JSON rotation request published over TLS to <code>esp32/key_rotation/request</code>.</p>
+                        </div>
+                        <div class="about-card">
+                            <div class="about-card-icon"><i class="fa-solid fa-tower-broadcast"></i></div>
+                            <h3>2. AWS IoT Core</h3>
+                            <p>IoT Core validates the device X.509 certificate and routes the message via an IoT SQL Topic Rule to AWS Lambda.</p>
+                        </div>
+                        <div class="about-card">
+                            <div class="about-card-icon"><i class="fa-solid fa-bolt"></i></div>
+                            <h3>3. AWS Lambda</h3>
+                            <p>The serverless function verifies the request and securely calls the AWS KMS API <code>kms:RotateKeyOnDemand</code>.</p>
+                        </div>
+                        <div class="about-card">
+                            <div class="about-card-icon"><i class="fa-solid fa-shield-halved"></i></div>
+                            <h3>4. AWS KMS</h3>
+                            <p>AWS KMS rotates the cryptographic backing material within FIPS 140-2 Level 3 HSMs. The KMS Key ID remains unchanged.</p>
+                        </div>
+                        <div class="about-card">
+                            <div class="about-card-icon"><i class="fa-solid fa-tv"></i></div>
+                            <h3>5. OLED Confirmation</h3>
+                            <p>Lambda publishes the new version confirmation back to <code>esp32/key_rotation/response</code> and the ESP32 OLED updates.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- Application Controller -->
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "LambdaBasicCloudWatchLogging",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:*:*:*"
+    },
+    {
+      "Sid": "KMSOnDemandKeyRotation",
+      "Effect": "Allow",
+      "Action": [
+        "kms:RotateKeyOnDemand",
+        "kms:DescribeKey",
+        "kms:GetKeyRotationStatus",
+        "kms:ListKeyRotations"
+      ],
+      "Resource": "arn:aws:kms:*:*:key/*"
+    },
+    {
+      "Sid": "IoTPublishResponseTopic",
+      "Effect": "Allow",
+      "Action": [
+        "iot:Publish"
+      ],
+      "Resource": "arn:aws:iot:*:*:topic/esp32/key_rotation/response"
+    }
+  ]
+}
