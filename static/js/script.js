@@ -338,6 +338,9 @@ document.addEventListener('DOMContentLoaded', () => {
         btnSpinner.style.display = 'inline-block';
         btnLabel.innerText = 'ROTATING KEY...';
 
+        // Reset all pipeline stages to neutral state before starting
+        resetPipelineUI();
+
         const startTime = Date.now();
         const startTimeClock = getClockTime();
 
@@ -351,7 +354,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Step 2: IoT Core
         await new Promise(r => setTimeout(r, 450));
-        pstageEsp.className = 'pipe-step done';
+        pstageEsp.className = 'pipe-step complete';
         pstatEsp.innerText = '✓ Sent';
 
         pstageIot.className = 'pipe-step active';
@@ -361,7 +364,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Step 3: Lambda
         await new Promise(r => setTimeout(r, 500));
-        pstageIot.className = 'pipe-step done';
+        pstageIot.className = 'pipe-step complete';
         pstatIot.innerText = '✓ Routed';
 
         pstageLambda.className = 'pipe-step active';
@@ -371,7 +374,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Step 4: KMS
         await new Promise(r => setTimeout(r, 550));
-        pstageLambda.className = 'pipe-step done';
+        pstageLambda.className = 'pipe-step complete';
         pstatLambda.innerText = '✓ Complete';
 
         pstageKms.className = 'pipe-step active';
@@ -393,7 +396,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (res.ok && data.success) {
                 // Step 4 Complete
-                pstageKms.className = 'pipe-step done';
+                pstageKms.className = 'pipe-step complete';
                 pstatKms.innerText = '✓ Rotated';
 
                 // Step 5: OLED Screen Update
@@ -401,7 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 pstatOled.innerText = 'Updating...';
                 await new Promise(r => setTimeout(r, 300));
 
-                pstageOled.className = 'pipe-step done';
+                pstageOled.className = 'pipe-step complete';
                 pstatOled.innerText = '✓ Success';
                 pipelineLiveMsg.innerText = `Key material successfully rotated to v${data.version_display || String(data.version).padStart(2, '0')}`;
                 pipelineLiveMsg.style.color = 'var(--color-forest)';
@@ -447,12 +450,48 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const handleFailure = (data, durationSec, startTimeClock) => {
-        pstageKms.className = 'pipe-step failed';
-        pstatKms.innerText = '✕ Failed';
-        pstageOled.className = 'pipe-step failed';
-        pstatOled.innerText = '✕ Error';
+        // Determine which stage failed based on error type from API
+        const errorType = (data.error || '').toLowerCase();
 
-        pipelineLiveMsg.innerText = `Rotation Failed: ${data.error || 'Check AWS configurations'}`;
+        if (errorType.includes('iot') || errorType.includes('timeout') || errorType.includes('mqtt')) {
+            // IoT failure: mark IoT as failed, reset Lambda/KMS/OLED to waiting
+            pstageIot.className = 'pipe-step failed';
+            pstatIot.innerText = '✕ Failed';
+            pstageLambda.className = 'pipe-step waiting';
+            pstatLambda.innerText = 'Waiting';
+            pstageKms.className = 'pipe-step waiting';
+            pstatKms.innerText = 'Waiting';
+            pstageOled.className = 'pipe-step waiting';
+            pstatOled.innerText = 'Waiting';
+        } else if (errorType.includes('lambda') || errorType.includes('execution')) {
+            // Lambda failure: IoT was OK, Lambda failed, KMS/OLED remain waiting
+            pstageIot.className = 'pipe-step complete';
+            pstatIot.innerText = '✓ Routed';
+            pstageLambda.className = 'pipe-step failed';
+            pstatLambda.innerText = '✕ Failed';
+            pstageKms.className = 'pipe-step waiting';
+            pstatKms.innerText = 'Waiting';
+            pstageOled.className = 'pipe-step waiting';
+            pstatOled.innerText = 'Waiting';
+        } else if (errorType.includes('kms') || errorType.includes('permission') || errorType.includes('denied')) {
+            // KMS failure: IoT + Lambda were OK, KMS failed, OLED remains waiting
+            pstageIot.className = 'pipe-step complete';
+            pstatIot.innerText = '✓ Routed';
+            pstageLambda.className = 'pipe-step complete';
+            pstatLambda.innerText = '✓ Complete';
+            pstageKms.className = 'pipe-step failed';
+            pstatKms.innerText = '✕ Failed';
+            pstageOled.className = 'pipe-step waiting';
+            pstatOled.innerText = 'Waiting';
+        } else {
+            // Generic / network failure — mark KMS as failed point
+            pstageKms.className = 'pipe-step failed';
+            pstatKms.innerText = '✕ Failed';
+            pstageOled.className = 'pipe-step waiting';
+            pstatOled.innerText = 'Waiting';
+        }
+
+        pipelineLiveMsg.innerText = `Simulation Failed: ${data.error || 'Check scenario selection'}`;
         pipelineLiveMsg.style.color = 'var(--color-coral)';
 
         oledLine1.innerText = 'ROTATION FAILED';
@@ -465,7 +504,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (dashRotDuration) dashRotDuration.innerText = `${durationSec}s`;
         if (respStatusBadge) { respStatusBadge.className = 'badge badge-error'; respStatusBadge.innerText = 'FAILED'; }
 
-        addActivityFeedItem('Error Occurred', data.message || data.error || 'Execution aborted', true);
+        addActivityFeedItem('Simulation Error', data.message || data.error || 'Execution aborted', true);
         showToast(data.message || data.error || 'Rotation failed', 'error');
     };
 

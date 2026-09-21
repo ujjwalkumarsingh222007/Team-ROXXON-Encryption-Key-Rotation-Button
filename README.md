@@ -86,3 +86,6 @@ When you are ready to connect real AWS services:
 1. Follow the step-by-step guide in [AWS_SETUP.md](file:///d:/Study%20material/CC_project/AWS_SETUP.md).
 2. Copy `.env.example` to `.env` and fill in your AWS credentials, `KMS_KEY_ID`, and `IOT_ENDPOINT`.
 3. In the web interface, switch from **DEMO MODE** to **REAL AWS**.
+
+
+
