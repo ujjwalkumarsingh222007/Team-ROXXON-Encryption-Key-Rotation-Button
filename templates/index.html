@@ -116,8 +116,8 @@
                             <button class="mode-btn active" id="modeBtnDemo" title="Simulated AWS pipeline without real cloud costs">
                                 <i class="fa-solid fa-flask"></i> DEMO MODE
                             </button>
-                            <button class="mode-btn" id="modeBtnReal" title="Real AWS IoT Core & KMS Key Rotation">
-                                <i class="fa-solid fa-cloud"></i> REAL AWS
+                            <button class="mode-btn" id="modeBtnReal" title="Real AWS KMS RotateKeyOnDemand — IoT, Lambda, ESP32 simulated">
+                                <i class="fa-solid fa-shield-halved"></i> REAL KMS
                             </button>
                         </div>
                     </div>
@@ -127,8 +127,8 @@
                 <div class="notice-banner" id="configNoticeBanner" style="display: none;">
                     <i class="fa-solid fa-circle-info banner-icon"></i>
                     <div class="banner-body">
-                        <strong id="bannerTitle">AWS Not Configured</strong>
-                        <span id="bannerMsg">Running in Demo Simulation mode. Follow AWS_SETUP.md to connect your real AWS KMS key.</span>
+                        <strong id="bannerTitle">AWS KMS Not Configured</strong>
+                        <span id="bannerMsg">Running in Demo Simulation mode. Follow README.md to configure your AWS KMS key in .env.</span>
                     </div>
                 </div>
 
@@ -343,6 +343,7 @@
                             <option value="iot_timeout">IoT Connection Failure</option>
                             <option value="lambda_error">Lambda Execution Failure</option>
                             <option value="kms_error">KMS Permission Denied</option>
+                            <option value="oled_error">OLED Display I2C Error</option>
                         </select>
                     </div>
                 </header>

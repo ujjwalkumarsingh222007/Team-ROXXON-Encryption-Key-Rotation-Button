@@ -140,15 +140,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const fetchHealthAndWarn = async () => {
         try {
-            const res = await fetch('/api/health');
+            const res = await fetch('/api/kms/status');
             const data = await res.json();
-            if (data.aws === 'not configured' || !data.kms_configured) {
+            if (!data.configured || data.status === 'NOT_CONFIGURED' || data.status === 'ERROR') {
                 configNoticeBanner.style.display = 'flex';
-                bannerTitle.innerText = 'AWS Not Configured';
-                bannerMsg.innerText = 'KMS_KEY_ID or AWS credentials not found in .env. Live calls will fail until configured via AWS_SETUP.md.';
+                bannerTitle.innerText = 'AWS KMS Not Configured';
+                bannerMsg.innerText = data.error || data.reason || 'KMS_KEY_ID or AWS credentials not found in .env. Real KMS calls will fail until configured.';
             } else {
                 configNoticeBanner.style.display = 'none';
-                showToast('REAL AWS MODE active with live AWS KMS');
+                showToast(`REAL KMS MODE active (Key: ${data.key_ref || 'alias/encryption-key-rotation'})`);
             }
         } catch (e) {
             console.error(e);
@@ -241,7 +241,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!elem) return;
         if (statusStr === 'Connected' || statusStr === 'Active' || statusStr === 'Ready') {
             elem.innerHTML = `<span class="status-dot green"></span> <span class="text-forest">${statusStr}</span>`;
-        } else if (statusStr.includes('Simulation')) {
+        } else if (statusStr && statusStr.includes('Simulation')) {
             elem.innerHTML = `<span class="status-dot blue"></span> <span class="text-blue">${statusStr}</span>`;
         } else {
             elem.innerHTML = `<span class="status-dot amber"></span> <span style="color:#D97706;">Not Configured</span>`;
@@ -266,9 +266,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const badge = item.status === 'SUCCESS' 
                     ? '<span class="badge badge-success">SUCCESS</span>' 
                     : '<span class="badge badge-error">FAILED</span>';
-                const modeBadge = item.mode === 'real'
-                    ? '<span class="badge badge-neutral">Real AWS</span>'
-                    : '<span class="badge badge-secondary">Demo</span>';
+                const modeBadge = item.mode === 'real' || item.kms_mode === 'REAL'
+                    ? '<span class="badge badge-neutral">REAL AWS KMS</span>'
+                    : '<span class="badge badge-secondary">Demo (Simulated)</span>';
                 const keyShort = item.key_id ? `${item.key_id.slice(0, 14)}...` : 'N/A';
 
                 tr.innerHTML = `
@@ -352,7 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
         oledLine2.innerText = 'PLEASE WAIT';
         addActivityFeedItem('ESP32 Button Pressed', 'Request dispatched to topic: esp32/key_rotation/request');
 
-        // Step 2: IoT Core
+        // Step 2: IoT Core (Simulated)
         await new Promise(r => setTimeout(r, 450));
         pstageEsp.className = 'pipe-step complete';
         pstatEsp.innerText = '✓ Sent';
@@ -360,17 +360,19 @@ document.addEventListener('DOMContentLoaded', () => {
         pstageIot.className = 'pipe-step active';
         pstatIot.innerText = 'Routing...';
         pipelineLiveMsg.innerText = 'AWS IoT Core received request, evaluating Topic Rule...';
-        addActivityFeedItem('AWS IoT Core', 'MQTT message received on topic esp32/key_rotation/request');
+        addActivityFeedItem('AWS IoT Core', 'MQTT message received on topic esp32/key_rotation/request (Simulated)');
 
-        // Step 3: Lambda
+        // Step 3: Lambda (Simulated)
         await new Promise(r => setTimeout(r, 500));
         pstageIot.className = 'pipe-step complete';
         pstatIot.innerText = '✓ Routed';
 
         pstageLambda.className = 'pipe-step active';
         pstatLambda.innerText = 'Executing...';
-        pipelineLiveMsg.innerText = 'Lambda invoking KMS RotateKeyOnDemand API...';
-        addActivityFeedItem('AWS Lambda', 'Executing ESP32-KeyRotationHandler function');
+        pipelineLiveMsg.innerText = mode === 'real' 
+            ? 'Invoking AWS KMS RotateKeyOnDemand API...' 
+            : 'Lambda invoking Simulated KMS Rotate API...';
+        addActivityFeedItem('AWS Lambda', 'Executing ESP32-KeyRotationHandler function (Simulated)');
 
         // Step 4: KMS
         await new Promise(r => setTimeout(r, 550));
@@ -378,9 +380,14 @@ document.addEventListener('DOMContentLoaded', () => {
         pstatLambda.innerText = '✓ Complete';
 
         pstageKms.className = 'pipe-step active';
-        pstatKms.innerText = 'Rotating...';
-        pipelineLiveMsg.innerText = 'AWS KMS rotating key material in HSM...';
-        addActivityFeedItem('AWS KMS', 'Rotating backing key material for CMK');
+        pstatKms.innerText = mode === 'real' ? 'Rotating (Real KMS)...' : 'Simulating KMS...';
+        pipelineLiveMsg.innerText = mode === 'real' 
+            ? 'AWS KMS rotating key material in HSM...' 
+            : 'Simulated KMS: updating local key material version...';
+        addActivityFeedItem(
+            mode === 'real' ? 'AWS KMS' : 'Simulated KMS',
+            mode === 'real' ? 'Calling kms:RotateKeyOnDemand on active CMK' : 'Local key material rotation simulation'
+        );
 
         const selectedScenario = scenarioSelect ? scenarioSelect.value : 'none';
 
@@ -397,7 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (res.ok && data.success) {
                 // Step 4 Complete
                 pstageKms.className = 'pipe-step complete';
-                pstatKms.innerText = '✓ Rotated';
+                pstatKms.innerText = mode === 'real' ? '✓ Real KMS' : '✓ Simulated KMS';
 
                 // Step 5: OLED Screen Update
                 pstageOled.className = 'pipe-step active';
@@ -406,21 +413,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 pstageOled.className = 'pipe-step complete';
                 pstatOled.innerText = '✓ Success';
-                pipelineLiveMsg.innerText = `Key material successfully rotated to v${data.version_display || String(data.version).padStart(2, '0')}`;
+                
+                const verText = data.version_display || String(data.version).padStart(2, '0');
+                if (mode === 'real') {
+                    pipelineLiveMsg.innerText = `Key material rotated in REAL AWS KMS (Version v${verText}) — Key ID unchanged`;
+                } else {
+                    pipelineLiveMsg.innerText = `Key material rotated in Demo Mode (Simulated KMS v${verText})`;
+                }
                 pipelineLiveMsg.style.color = 'var(--color-forest)';
 
                 // Update UI state
                 activeKeyVersion = data.version;
+                if (data.key_id) activeKeyId = data.key_id;
+                if (currentKeyId) currentKeyId.innerText = activeKeyId;
                 if (currentKeyVersion) currentKeyVersion.innerText = `v${String(activeKeyVersion).padStart(2, '0')}`;
                 if (currentKeyLastRot) currentKeyLastRot.innerText = getClockTime();
 
                 // OLED Success Screen
                 oledLine1.innerText = 'ROTATION SUCCESS';
-                oledLine2.innerText = `VERSION: ${data.version_display || String(data.version).padStart(2, '0')}`;
-                if (oledLine3) oledLine3.innerText = 'KEY UPDATED!';
+                oledLine2.innerText = `VERSION: ${verText}`;
+                if (oledLine3) oledLine3.innerText = mode === 'real' ? 'REAL KMS OK' : 'KEY UPDATED!';
 
                 // Dashboard summary
-                if (dashRotNum) dashRotNum.innerText = `#${data.version_display || data.version}`;
+                if (dashRotNum) dashRotNum.innerText = `#${verText}`;
                 if (dashRotStatus) { dashRotStatus.className = 'badge badge-success'; dashRotStatus.innerText = 'SUCCESS'; }
                 if (dashRotStarted) dashRotStarted.innerText = startTimeClock;
                 if (dashRotCompleted) dashRotCompleted.innerText = getClockTime();
@@ -428,16 +443,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (reqIdVal) reqIdVal.innerText = data.request_id || 'ROT-SUCCESS';
                 if (respStatusBadge) { respStatusBadge.className = 'badge badge-success'; respStatusBadge.innerText = 'SUCCESS'; }
 
-                addActivityFeedItem('OLED Updated', `SSD1306 display rendered version v${data.version_display || data.version}`);
-                showToast(`Key rotated successfully (Version v${data.version_display || data.version})`);
+                addActivityFeedItem('OLED Updated', `SSD1306 display rendered version v${verText} (${mode === 'real' ? 'Real AWS KMS' : 'Simulated'})`);
+                showToast(mode === 'real' 
+                    ? `REAL AWS KMS rotated key material (Version v${verText})` 
+                    : `Key rotated in Demo Mode (Simulated KMS v${verText})`
+                );
 
             } else {
                 // Failure path
-                handleFailure(data, durationSec, startTimeClock);
+                handleFailure(data, durationSec, startTimeClock, mode);
             }
 
         } catch (err) {
-            handleFailure({ error: 'Network / Server Error', message: err.message }, '1.2', startTimeClock);
+            handleFailure({ error: 'Network / Server Error', message: err.message }, '1.2', startTimeClock, mode);
         } finally {
             isRotating = false;
             btnRotate.disabled = false;
@@ -449,7 +467,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    const handleFailure = (data, durationSec, startTimeClock) => {
+    const handleFailure = (data, durationSec, startTimeClock, mode = 'demo') => {
         // Determine which stage failed based on error type from API
         const errorType = (data.error || '').toLowerCase();
 
@@ -473,7 +491,17 @@ document.addEventListener('DOMContentLoaded', () => {
             pstatKms.innerText = 'Waiting';
             pstageOled.className = 'pipe-step waiting';
             pstatOled.innerText = 'Waiting';
-        } else if (errorType.includes('kms') || errorType.includes('permission') || errorType.includes('denied')) {
+        } else if (errorType.includes('oled') || errorType.includes('i2c')) {
+            // OLED failure: IoT, Lambda, KMS all succeeded, only OLED display failed
+            pstageIot.className = 'pipe-step complete';
+            pstatIot.innerText = '✓ Routed';
+            pstageLambda.className = 'pipe-step complete';
+            pstatLambda.innerText = '✓ Complete';
+            pstageKms.className = 'pipe-step complete';
+            pstatKms.innerText = mode === 'real' ? '✓ Real KMS' : '✓ Simulated KMS';
+            pstageOled.className = 'pipe-step failed';
+            pstatOled.innerText = '✕ Error';
+        } else if (errorType.includes('kms') || errorType.includes('permission') || errorType.includes('denied') || errorType.includes('not configured')) {
             // KMS failure: IoT + Lambda were OK, KMS failed, OLED remains waiting
             pstageIot.className = 'pipe-step complete';
             pstatIot.innerText = '✓ Routed';
@@ -491,12 +519,18 @@ document.addEventListener('DOMContentLoaded', () => {
             pstatOled.innerText = 'Waiting';
         }
 
-        pipelineLiveMsg.innerText = `Simulation Failed: ${data.error || 'Check scenario selection'}`;
+        pipelineLiveMsg.innerText = `Rotation Failed: ${data.error || data.message || 'Check configurations'}`;
         pipelineLiveMsg.style.color = 'var(--color-coral)';
 
-        oledLine1.innerText = 'ROTATION FAILED';
-        oledLine2.innerText = 'TRY AGAIN';
-        if (oledLine3) oledLine3.innerText = 'ERROR';
+        if (errorType.includes('oled') || errorType.includes('i2c')) {
+            oledLine1.innerText = 'OLED I2C ERROR';
+            oledLine2.innerText = 'KEY ROTATED';
+            if (oledLine3) oledLine3.innerText = 'DISPLAY FAIL';
+        } else {
+            oledLine1.innerText = 'ROTATION FAILED';
+            oledLine2.innerText = 'TRY AGAIN';
+            if (oledLine3) oledLine3.innerText = 'ERROR';
+        }
 
         if (dashRotStatus) { dashRotStatus.className = 'badge badge-error'; dashRotStatus.innerText = 'FAILED'; }
         if (dashRotStarted) dashRotStarted.innerText = startTimeClock;
@@ -504,7 +538,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (dashRotDuration) dashRotDuration.innerText = `${durationSec}s`;
         if (respStatusBadge) { respStatusBadge.className = 'badge badge-error'; respStatusBadge.innerText = 'FAILED'; }
 
-        addActivityFeedItem('Simulation Error', data.message || data.error || 'Execution aborted', true);
+        addActivityFeedItem('Rotation Error', data.message || data.error || 'Execution aborted', true);
         showToast(data.message || data.error || 'Rotation failed', 'error');
     };
 
