@@ -10,6 +10,11 @@ import json
 import logging
 import uuid
 import datetime
+from dotenv import load_dotenv
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+load_dotenv(ENV_PATH, override=True)
 
 logger = logging.getLogger("aws_iot")
 

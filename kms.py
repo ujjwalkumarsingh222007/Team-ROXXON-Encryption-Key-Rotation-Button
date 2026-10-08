@@ -22,6 +22,11 @@ Key design rules (matching real AWS KMS behavior):
 import os
 import logging
 import datetime
+from dotenv import load_dotenv
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+load_dotenv(ENV_PATH, override=True)
 
 logger = logging.getLogger("kms_manager")
 
@@ -75,16 +80,19 @@ class KMSManager:
 
     def has_credentials(self) -> bool:
         """Check whether basic AWS access keys are present in the environment."""
+        load_dotenv(ENV_PATH, override=True)
         access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
         secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
         return bool(access_key and secret_key)
 
     def has_session_token(self) -> bool:
         """Check whether temporary AWS session token is present."""
+        load_dotenv(ENV_PATH, override=True)
         return bool(os.getenv("AWS_SESSION_TOKEN", "").strip())
 
     def _init_client(self):
         """Initialize or refresh boto3 client with current environment variables."""
+        load_dotenv(ENV_PATH, override=True)
         if not BOTO3_AVAILABLE:
             logger.warning("boto3 is not installed — KMS calls will not work.")
             self.client = None

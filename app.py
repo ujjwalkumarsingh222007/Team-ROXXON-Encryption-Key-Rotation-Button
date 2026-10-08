@@ -32,12 +32,13 @@ import uuid
 import time
 from datetime import datetime, timezone
 from dotenv import load_dotenv
+
+# Load .env before reading ANY environment variables and before importing managers
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+load_dotenv(ENV_PATH, override=True)
+
 from flask import Flask, render_template, jsonify, request
-
-# Load .env before importing managers so env vars are available
-ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
-load_dotenv(dotenv_path=ENV_PATH)
-
 from kms import KMSManager
 from aws_iot import AWSIoTManager
 
@@ -58,6 +59,7 @@ iot_mgr = AWSIoTManager()
 
 def get_app_mode() -> str:
     """Returns 'real' only when APP_MODE=real is set in .env, else 'demo'."""
+    load_dotenv(ENV_PATH, override=True)
     return "real" if os.getenv("APP_MODE", "demo").lower() == "real" else "demo"
 
 
@@ -175,6 +177,7 @@ def api_diagnostic():
     Safe diagnostic endpoint reporting AWS configuration presence flags.
     NEVER returns credential values or secret keys.
     """
+    load_dotenv(ENV_PATH, override=True)
     return jsonify({
         "env_file_found": os.path.exists(ENV_PATH),
         "app_mode": get_app_mode(),
