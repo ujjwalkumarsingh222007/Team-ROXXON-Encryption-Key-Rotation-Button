@@ -3,16 +3,19 @@ AWS KMS Manager — Encryption Key Rotation Button
 ================================================
 Handles REAL AWS KMS operations via boto3 with safe simulated fallback.
 
-Target AWS KMS Key Details:
-  - Region: us-east-1
-  - Key ID: 4f206dc3-dea4-4fcf-baee-8624627af374
+Supports AWS authentication via:
+  - AWS_ACCESS_KEY_ID
+  - AWS_SECRET_ACCESS_KEY
+  - AWS_SESSION_TOKEN (for temporary credentials, e.g. AWS VocLabs / Academy / Learner Lab)
+  - AWS_REGION (default: us-east-1)
+  - KMS_KEY_ID (default: 4f206dc3-dea4-4fcf-baee-8624627af374)
 
 Key design rules (matching real AWS KMS behavior):
   - KMS Key ID NEVER changes during a rotation.
   - On-demand rotation (kms:RotateKeyOnDemand) rotates the backing cryptographic
-    key material inside AWS HSMs while keeping the same Key ID.
-  - Private key material / secret credentials are NEVER returned or logged.
-  - No rotation occurs on startup or status checks (DescribeKey / GetKeyRotationStatus only).
+    key material inside AWS HSMs while keeping the exact same Key ID.
+  - Private key material, secret keys, or session tokens are NEVER returned, logged, or exposed.
+  - Read-only methods (DescribeKey / GetKeyRotationStatus) NEVER mutate KMS state.
   - RotateKeyOnDemand is called ONLY when the user explicitly triggers REAL KMS mode.
 """
 
@@ -54,7 +57,6 @@ except ImportError:
 class KMSManager:
     """
     Manages AWS KMS operations for the Encryption Key Rotation project.
-
     Uses boto3 to interact directly with AWS KMS in us-east-1.
     """
 
@@ -65,25 +67,54 @@ class KMSManager:
         self._init_client()
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal helpers & dynamic client management
     # ------------------------------------------------------------------
 
+    def is_boto3_available(self) -> bool:
+        return BOTO3_AVAILABLE
+
+    def has_credentials(self) -> bool:
+        """Check whether basic AWS access keys are present in the environment."""
+        access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+        return bool(access_key and secret_key)
+
+    def has_session_token(self) -> bool:
+        """Check whether temporary AWS session token is present."""
+        return bool(os.getenv("AWS_SESSION_TOKEN", "").strip())
+
     def _init_client(self):
+        """Initialize or refresh boto3 client with current environment variables."""
         if not BOTO3_AVAILABLE:
             logger.warning("boto3 is not installed — KMS calls will not work.")
+            self.client = None
             return
+
         try:
-            # Uses environment AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN)
-            # or ~/.aws/credentials / IAM role
-            self.client = boto3.client("kms", region_name=self.region)
-            logger.info(f"KMS client initialised for region {self.region} with Key ID {self.key_id}")
+            self.region = os.getenv("AWS_REGION", self.region or DEFAULT_AWS_REGION).strip()
+            self.key_id = os.getenv("KMS_KEY_ID", self.key_id or DEFAULT_KMS_KEY_ID).strip()
+
+            access_key = os.getenv("AWS_ACCESS_KEY_ID", "").strip() or None
+            secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip() or None
+            session_token = os.getenv("AWS_SESSION_TOKEN", "").strip() or None
+
+            client_kwargs = {"region_name": self.region}
+            if access_key and secret_key:
+                client_kwargs["aws_access_key_id"] = access_key
+                client_kwargs["aws_secret_access_key"] = secret_key
+                if session_token:
+                    client_kwargs["aws_session_token"] = session_token
+
+            self.client = boto3.client("kms", **client_kwargs)
+            logger.info(f"KMS client initialized for region {self.region}")
         except Exception as exc:
             logger.warning(f"Could not create boto3 KMS client: {exc}")
             self.client = None
 
     def is_configured(self) -> bool:
-        """True when boto3 is available and a Key ID is set."""
-        return bool(BOTO3_AVAILABLE and self.key_id and self.client)
+        """True when boto3 is available, key ID is set, and credentials are configured."""
+        self._init_client()
+        return bool(BOTO3_AVAILABLE and self.key_id and self.has_credentials() and self.client)
 
     # ------------------------------------------------------------------
     # Status & Metadata Check (Read-Only: DescribeKey + GetKeyRotationStatus)
@@ -97,49 +128,39 @@ class KMSManager:
         NEVER calls RotateKeyOnDemand.
         NEVER returns key material, credentials, or secret data.
         """
-        # Re-read env var in case it changed at runtime
-        self.key_id = os.getenv("KMS_KEY_ID", self.key_id or DEFAULT_KMS_KEY_ID).strip()
-        self.region = os.getenv("AWS_REGION", self.region or DEFAULT_AWS_REGION).strip()
+        self._init_client()
 
         if not self.is_configured():
+            if not self.has_credentials():
+                reason = "AWS credentials are not configured. Add temporary AWS credentials to .env or use Demo Mode."
+            else:
+                reason = "boto3 library or KMS Key ID not configured."
+
             return {
                 "configured": False,
                 "key_id": self.key_id,
                 "region": self.region,
                 "status": "NOT_CONFIGURED",
-                "error": "boto3 not installed or AWS KMS credentials not available in environment.",
-                "reason": "AWS credentials or boto3 not configured.",
+                "rotation_status": "Not available",
+                "last_rotated": "Not available",
+                "error": reason,
+                "reason": reason,
+                "mode": "REAL",
             }
 
         try:
-            # 1. Call DescribeKey for key metadata
+            # 1. Call DescribeKey for key metadata (Read-Only)
             desc = self.client.describe_key(KeyId=self.key_id)
             meta = desc.get("KeyMetadata", {})
             actual_key_id = meta.get("KeyId", self.key_id)
 
-            # 2. Call GetKeyRotationStatus for annual rotation status
+            # 2. Call GetKeyRotationStatus for annual rotation status (Read-Only)
             rotation_enabled = False
             try:
                 rot = self.client.get_key_rotation_status(KeyId=actual_key_id)
                 rotation_enabled = rot.get("KeyRotationEnabled", False)
             except Exception as e:
                 logger.debug(f"GetKeyRotationStatus optional check: {e}")
-
-            # 3. Optional: check list_key_rotations for on-demand rotation count
-            rotation_count = 1
-            last_rotated = "Never"
-            try:
-                rot_list = self.client.list_key_rotations(KeyId=actual_key_id)
-                rotations = rot_list.get("Rotations", [])
-                rotation_count = max(len(rotations) + 1, 1)
-                if rotations:
-                    latest = rotations[-1].get("RotationDate")
-                    if latest:
-                        last_rotated = latest.strftime("%Y-%m-%d %H:%M:%S UTC")
-            except Exception:
-                creation = meta.get("CreationDate")
-                if creation:
-                    last_rotated = creation.strftime("%Y-%m-%d %H:%M:%S UTC")
 
             return {
                 "configured": True,
@@ -187,15 +208,26 @@ class KMSManager:
         Returns safe metadata showing the SAME Key ID and successful rotation.
         NEVER returns private key material or AWS credentials.
         """
-        self.key_id = os.getenv("KMS_KEY_ID", self.key_id or DEFAULT_KMS_KEY_ID).strip()
-        self.region = os.getenv("AWS_REGION", self.region or DEFAULT_AWS_REGION).strip()
+        self._init_client()
+
+        if not self.has_credentials():
+            return {
+                "success": False,
+                "error_type": "NO_CREDENTIALS",
+                "error": "AWS credentials are not configured. Add temporary AWS credentials to .env or use Demo Mode.",
+                "message": "AWS credentials are not configured. Add temporary AWS credentials to .env or use Demo Mode.",
+                "solution": "Add AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_SESSION_TOKEN to your .env file or use Demo Mode.",
+                "kms_mode": "REAL",
+            }
 
         if not self.is_configured():
             return {
                 "success": False,
                 "error_type": "NOT_CONFIGURED",
+                "error": "AWS KMS is not configured. Set KMS_KEY_ID and AWS credentials in .env.",
                 "message": "AWS KMS is not configured. Set KMS_KEY_ID and AWS credentials in .env.",
                 "solution": "Provide AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and KMS_KEY_ID in .env",
+                "kms_mode": "REAL",
             }
 
         try:
@@ -239,7 +271,7 @@ def _parse_aws_exception(exc: Exception, key_id: str, region: str) -> tuple[str,
     Ensures credentials, secret tokens, or internal stack traces are never leaked.
     """
     if isinstance(exc, NoCredentialsError):
-        return ("AWS credentials not found. Configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env.", "NO_CREDENTIALS")
+        return ("AWS credentials are not configured. Add temporary AWS credentials to .env or use Demo Mode.", "NO_CREDENTIALS")
 
     if isinstance(exc, PartialCredentialsError):
         return ("Incomplete AWS credentials. Both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required.", "PARTIAL_CREDENTIALS")
@@ -254,10 +286,10 @@ def _parse_aws_exception(exc: Exception, key_id: str, region: str) -> tuple[str,
         raw_msg = err_obj.get("Message", str(exc))
 
         if code in ("ExpiredToken", "ExpiredTokenException"):
-            return ("AWS temporary credentials / session token have expired. Please update AWS_SESSION_TOKEN / credentials in .env.", "EXPIRED_TOKEN")
+            return ("AWS credentials have expired. Refresh your AWS VocLabs credentials and restart Flask.", "EXPIRED_TOKEN")
 
         if code in ("UnrecognizedClientException", "InvalidClientTokenId", "AuthFailure"):
-            return ("AWS credentials are invalid or unrecognized by AWS.", "INVALID_CREDENTIALS")
+            return ("AWS credentials are invalid or unrecognized. Refresh your AWS VocLabs credentials in .env.", "INVALID_CREDENTIALS")
 
         if code == "AccessDeniedException":
             return (f"Access Denied: IAM role lacks required permissions on KMS key '{key_id}'.", "ACCESS_DENIED")
@@ -278,7 +310,7 @@ def _parse_aws_exception(exc: Exception, key_id: str, region: str) -> tuple[str,
 
     # General / fallback exception
     msg = str(exc)
-    for sensitive in ("Credential", "credential", "Secret", "secret", "Token", "token"):
+    for sensitive in ("Credential", "credential", "Secret", "secret", "Token", "token", "AccessKey"):
         if sensitive in msg:
             return ("AWS authentication error. Check credentials in .env.", "AUTH_ERROR")
 
@@ -288,9 +320,10 @@ def _parse_aws_exception(exc: Exception, key_id: str, region: str) -> tuple[str,
 def _get_error_solution(error_code: str, key_id: str, region: str) -> str:
     """Return user-friendly remediation advice for each error code."""
     solutions = {
-        "EXPIRED_TOKEN": "Your AWS lab session token expired. Copy fresh credentials from AWS CloudShell / Lab details into .env.",
-        "INVALID_CREDENTIALS": "Check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in your .env file.",
-        "NO_CREDENTIALS": "Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION in your .env file.",
+        "NO_CREDENTIALS": "Add AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_SESSION_TOKEN to your .env file or use Demo Mode.",
+        "EXPIRED_TOKEN": "AWS credentials / session token have expired. Refresh your AWS VocLabs credentials from your lab session into .env and restart Flask.",
+        "INVALID_CREDENTIALS": "Check AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_SESSION_TOKEN in .env.",
+        "PARTIAL_CREDENTIALS": "Ensure AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_SESSION_TOKEN are all provided in .env.",
         "ACCESS_DENIED": "Ensure your AWS IAM user/role has 'kms:DescribeKey', 'kms:GetKeyRotationStatus', and 'kms:RotateKeyOnDemand' permissions.",
         "KEY_NOT_FOUND": f"Ensure Key ID '{key_id}' exists in region '{region}'.",
         "LIMIT_EXCEEDED": "AWS allows up to 10 on-demand rotations per key per year. Test with Demo Mode or create a new test key.",

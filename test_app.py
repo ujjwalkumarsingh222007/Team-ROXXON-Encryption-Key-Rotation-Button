@@ -137,5 +137,36 @@ class AppTestCase(unittest.TestCase):
         sol = _get_error_solution("EXPIRED_TOKEN", DEFAULT_KMS_KEY_ID, "us-east-1")
         self.assertIn("expired", sol.lower())
 
+    def test_diagnostic_endpoint(self):
+        response = self.client.get('/api/diagnostic')
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.data)
+        self.assertIn('env_file_found', data)
+        self.assertIn('app_mode', data)
+        self.assertIn('aws_access_key_id_present', data)
+        self.assertIn('aws_secret_access_key_present', data)
+        self.assertIn('aws_session_token_present', data)
+        self.assertIn('aws_region', data)
+        self.assertIn('kms_key_id', data)
+        self.assertIn('boto3_available', data)
+        self.assertIn('kms_configured', data)
+        # Verify no actual secrets or keys are returned
+        for key, val in data.items():
+            if 'key' in key.lower() and key != 'kms_key_id':
+                self.assertIsInstance(val, bool)
+
+    def test_real_kms_mode_unconfigured_error(self):
+        # When KMS credentials are not configured, real mode must return 400 with clear message
+        # without crashing and without fallback to demo mode
+        kms_mgr = KMSManager()
+        if not kms_mgr.is_configured():
+            response = self.client.post('/api/rotate', json={"mode": "real", "scenario": "none"})
+            self.assertEqual(response.status_code, 400)
+            data = json.loads(response.data)
+            self.assertFalse(data['success'])
+            self.assertEqual(data['status'], 'FAILED')
+            self.assertEqual(data['kms_mode'], 'real')
+            self.assertIn('solution', data)
+
 if __name__ == '__main__':
     unittest.main()

@@ -35,7 +35,8 @@ from dotenv import load_dotenv
 from flask import Flask, render_template, jsonify, request
 
 # Load .env before importing managers so env vars are available
-load_dotenv()
+ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+load_dotenv(dotenv_path=ENV_PATH)
 
 from kms import KMSManager
 from aws_iot import AWSIoTManager
@@ -161,6 +162,29 @@ def api_health():
         "iot_configured": iot_conf,
         "aws": "configured" if kms_conf else "not configured",
         "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Routes — Diagnostic (Safe credential & configuration checker)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/diagnostic", methods=["GET"])
+def api_diagnostic():
+    """
+    Safe diagnostic endpoint reporting AWS configuration presence flags.
+    NEVER returns credential values or secret keys.
+    """
+    return jsonify({
+        "env_file_found": os.path.exists(ENV_PATH),
+        "app_mode": get_app_mode(),
+        "aws_access_key_id_present": bool(os.getenv("AWS_ACCESS_KEY_ID", "").strip()),
+        "aws_secret_access_key_present": bool(os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()),
+        "aws_session_token_present": bool(os.getenv("AWS_SESSION_TOKEN", "").strip()),
+        "aws_region": os.getenv("AWS_REGION", "us-east-1"),
+        "kms_key_id": os.getenv("KMS_KEY_ID", "4f206dc3-dea4-4fcf-baee-8624627af374"),
+        "boto3_available": kms_mgr.is_boto3_available(),
+        "kms_configured": kms_mgr.is_configured(),
     })
 
 
@@ -526,19 +550,20 @@ def api_rotate():
 
     if mode_requested == "real":
         if not kms_mgr.is_configured():
+            has_creds = kms_mgr.has_credentials()
+            if not has_creds:
+                msg = "AWS credentials not found. Configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env."
+                sol = "Open your .env file and add your AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_SESSION_TOKEN if using VocLabs), or switch to Demo Mode."
+            else:
+                msg = "KMS_KEY_ID is not set or boto3 KMS client could not be initialized."
+                sol = "Ensure KMS_KEY_ID=4f206dc3-dea4-4fcf-baee-8624627af374 is set in .env."
+
             return jsonify({
                 "success": False,
                 "status": "FAILED",
                 "error": "AWS KMS Not Configured",
-                "message": (
-                    "KMS_KEY_ID is not set or AWS credentials are not available. "
-                    "Check your .env file."
-                ),
-                "solution": (
-                    "Set KMS_KEY_ID=4f206dc3-dea4-4fcf-baee-8624627af374 and ensure "
-                    "AWS credentials are available in .env, ~/.aws/credentials, "
-                    "or environment variables."
-                ),
+                "message": msg,
+                "solution": sol,
                 "kms_mode": "real",
             }), 400
 
