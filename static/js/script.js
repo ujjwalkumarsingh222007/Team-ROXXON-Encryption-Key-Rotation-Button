@@ -254,18 +254,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-            // Update Honest AWS Status Indicators
-            if (data.aws_services) {
-                updateStatusPill(statValIot, data.aws_services.iot_core.status);
-                updateStatusPill(statValLambda, data.aws_services.lambda.status);
-                updateStatusPill(statValKms, data.aws_services.kms.status);
-            }
-
-        } catch (e) {
-            console.error('Failed to fetch status:', e);
-        }
-    };
-
     const updateStatusPill = (elem, statusStr) => {
         if (!elem) return;
         if (statusStr === 'Connected' || statusStr === 'Active' || statusStr === 'Ready') {
