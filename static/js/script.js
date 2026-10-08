@@ -50,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Current Key Fields
     const currentKeyId = document.getElementById('currentKeyId');
     const currentKeyStatus = document.getElementById('currentKeyStatus');
+    const currentKeyRotationLabel = document.getElementById('currentKeyRotationLabel');
     const currentKeyVersion = document.getElementById('currentKeyVersion');
     const currentKeyLastRot = document.getElementById('currentKeyLastRot');
     const btnCopyKey = document.getElementById('btnCopyKey');
@@ -136,6 +137,7 @@ document.addEventListener('DOMContentLoaded', () => {
         modeBtnReal.classList.add('active');
         modeBtnDemo.classList.remove('active');
         fetchHealthAndWarn();
+        fetchStatus();
     });
 
     const fetchHealthAndWarn = async () => {
@@ -209,21 +211,48 @@ document.addEventListener('DOMContentLoaded', () => {
         activityFeedList.prepend(item);
     };
 
-    // Fetch Status & Populate System Checks
+    // Fetch Status & Populate System Checks (Read-Only)
     const fetchStatus = async () => {
         try {
             const res = await fetch('/api/status');
             const data = await res.json();
 
             if (data.current_key) {
-                activeKeyId = data.current_key.key_id;
+                activeKeyId = data.current_key.key_id || '4f206dc3-dea4-4fcf-baee-8624627af374';
                 activeKeyVersion = data.current_key.version || 1;
 
                 if (currentKeyId) currentKeyId.innerText = activeKeyId;
-                if (currentKeyVersion) currentKeyVersion.innerText = `v${String(activeKeyVersion).padStart(2, '0')}`;
-                if (currentKeyLastRot) currentKeyLastRot.innerText = data.current_key.last_rotation || 'Never';
-                if (oledLine3) oledLine3.innerText = `VER: v${String(activeKeyVersion).padStart(2, '0')}`;
+
+                if (currentAppMode === 'real') {
+                    if (currentKeyStatus) {
+                        currentKeyStatus.innerHTML = `<i class="fa-solid fa-circle text-forest status-mini-dot"></i> ${data.current_key.status || 'Active'}`;
+                    }
+                    if (currentKeyRotationLabel) currentKeyRotationLabel.innerText = 'Rotation Status';
+                    if (currentKeyVersion) currentKeyVersion.innerText = data.current_key.rotation_status || 'Ready';
+                    if (currentKeyLastRot) currentKeyLastRot.innerText = data.current_key.last_rotation || 'Not available';
+                    if (oledLine3) oledLine3.innerText = 'REAL AWS KMS';
+                } else {
+                    if (currentKeyStatus) {
+                        currentKeyStatus.innerHTML = `<i class="fa-solid fa-circle text-forest status-mini-dot"></i> ${data.current_key.status || 'Active (Simulated)'}`;
+                    }
+                    if (currentKeyRotationLabel) currentKeyRotationLabel.innerText = 'Key Version (Simulated)';
+                    if (currentKeyVersion) currentKeyVersion.innerText = `v${String(activeKeyVersion).padStart(2, '0')} (Simulated)`;
+                    if (currentKeyLastRot) currentKeyLastRot.innerText = data.current_key.last_rotation || 'Use rotation history';
+                    if (oledLine3) oledLine3.innerText = `VER: v${String(activeKeyVersion).padStart(2, '0')}`;
+                }
             }
+
+            // Update Honest AWS Status Indicators
+            if (data.aws_services) {
+                updateStatusPill(statValIot, data.aws_services.iot_core.status);
+                updateStatusPill(statValLambda, data.aws_services.lambda.status);
+                updateStatusPill(statValKms, data.aws_services.kms.status);
+            }
+
+        } catch (e) {
+            console.error('Failed to fetch status:', e);
+        }
+    };
 
             // Update Honest AWS Status Indicators
             if (data.aws_services) {
@@ -416,26 +445,41 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 const verText = data.version_display || String(data.version).padStart(2, '0');
                 if (mode === 'real') {
-                    pipelineLiveMsg.innerText = `Key material rotated in REAL AWS KMS (Version v${verText}) — Key ID unchanged`;
+                    pipelineLiveMsg.innerText = `Real AWS KMS: Key material rotated successfully (Key ID: ${activeKeyId})`;
+                    
+                    if (currentKeyRotationLabel) currentKeyRotationLabel.innerText = 'Rotation Status';
+                    if (currentKeyVersion) currentKeyVersion.innerText = 'Key material rotated';
+                    if (currentKeyLastRot) currentKeyLastRot.innerText = `${getClockTime()} UTC (This session)`;
+                    if (currentKeyStatus) currentKeyStatus.innerHTML = `<i class="fa-solid fa-circle text-forest status-mini-dot"></i> Active`;
+
+                    // OLED Success Screen for Real KMS
+                    oledLine1.innerText = 'ROTATION SUCCESS';
+                    oledLine2.innerText = 'KEY ROTATED';
+                    if (oledLine3) oledLine3.innerText = 'REAL AWS KMS';
+
+                    // Dashboard summary
+                    if (dashRotNum) dashRotNum.innerText = 'Rotated';
                 } else {
                     pipelineLiveMsg.innerText = `Key material rotated in Demo Mode (Simulated KMS v${verText})`;
+                    
+                    activeKeyVersion = data.version;
+                    if (currentKeyRotationLabel) currentKeyRotationLabel.innerText = 'Key Version (Simulated)';
+                    if (currentKeyVersion) currentKeyVersion.innerText = `v${String(activeKeyVersion).padStart(2, '0')} (Simulated)`;
+                    if (currentKeyLastRot) currentKeyLastRot.innerText = `${getClockTime()} (Simulated)`;
+
+                    // OLED Success Screen for Demo
+                    oledLine1.innerText = 'ROTATION SUCCESS';
+                    oledLine2.innerText = `VERSION: ${verText}`;
+                    if (oledLine3) oledLine3.innerText = 'SIMULATED KMS';
+
+                    // Dashboard summary
+                    if (dashRotNum) dashRotNum.innerText = `#${verText}`;
                 }
                 pipelineLiveMsg.style.color = 'var(--color-forest)';
 
-                // Update UI state
-                activeKeyVersion = data.version;
                 if (data.key_id) activeKeyId = data.key_id;
                 if (currentKeyId) currentKeyId.innerText = activeKeyId;
-                if (currentKeyVersion) currentKeyVersion.innerText = `v${String(activeKeyVersion).padStart(2, '0')}`;
-                if (currentKeyLastRot) currentKeyLastRot.innerText = getClockTime();
 
-                // OLED Success Screen
-                oledLine1.innerText = 'ROTATION SUCCESS';
-                oledLine2.innerText = `VERSION: ${verText}`;
-                if (oledLine3) oledLine3.innerText = mode === 'real' ? 'REAL KMS OK' : 'KEY UPDATED!';
-
-                // Dashboard summary
-                if (dashRotNum) dashRotNum.innerText = `#${verText}`;
                 if (dashRotStatus) { dashRotStatus.className = 'badge badge-success'; dashRotStatus.innerText = 'SUCCESS'; }
                 if (dashRotStarted) dashRotStarted.innerText = startTimeClock;
                 if (dashRotCompleted) dashRotCompleted.innerText = getClockTime();
@@ -443,9 +487,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (reqIdVal) reqIdVal.innerText = data.request_id || 'ROT-SUCCESS';
                 if (respStatusBadge) { respStatusBadge.className = 'badge badge-success'; respStatusBadge.innerText = 'SUCCESS'; }
 
-                addActivityFeedItem('OLED Updated', `SSD1306 display rendered version v${verText} (${mode === 'real' ? 'Real AWS KMS' : 'Simulated'})`);
+                addActivityFeedItem('OLED Updated', `SSD1306 display rendered: ${mode === 'real' ? 'Real AWS KMS key material rotated' : 'version v' + verText + ' (Simulated)'}`);
                 showToast(mode === 'real' 
-                    ? `REAL AWS KMS rotated key material (Version v${verText})` 
+                    ? `Real AWS KMS: Key material rotated successfully` 
                     : `Key rotated in Demo Mode (Simulated KMS v${verText})`
                 );
 

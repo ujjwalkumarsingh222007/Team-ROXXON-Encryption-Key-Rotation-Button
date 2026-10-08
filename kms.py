@@ -143,18 +143,18 @@ class KMSManager:
 
             return {
                 "configured": True,
-                "key_id": actual_key_id,  # Same KMS Key ID
+                "key_id": actual_key_id,  # Same KMS Key ID: 4f206dc3-dea4-4fcf-baee-8624627af374
                 "arn": meta.get("Arn", f"arn:aws:kms:{self.region}:...:key/{actual_key_id}"),
                 "region": self.region,
-                "status": "ACTIVE" if meta.get("Enabled") else "DISABLED",
+                "status": "Active" if meta.get("Enabled") else "Disabled",
                 "key_state": meta.get("KeyState", "Enabled"),
                 "key_spec": meta.get("KeySpec", "SYMMETRIC_DEFAULT"),
                 "key_usage": meta.get("KeyUsage", "ENCRYPT_DECRYPT"),
                 "origin": meta.get("Origin", "AWS_KMS"),
                 "multi_region": meta.get("MultiRegion", False),
+                "rotation_status": "Ready",
+                "last_rotated": "Not available",
                 "rotation_auto_enabled": rotation_enabled,
-                "rotation_count": rotation_count,
-                "last_rotated": last_rotated,
                 "error": None,
                 "mode": "REAL",
             }
@@ -167,6 +167,8 @@ class KMSManager:
                 "key_id": self.key_id,
                 "region": self.region,
                 "status": "ERROR",
+                "rotation_status": "Not available",
+                "last_rotated": "Not available",
                 "error_code": error_code,
                 "error": safe_error,
                 "mode": "REAL",
@@ -197,21 +199,19 @@ class KMSManager:
             }
 
         try:
-            # 1. Execute on-demand rotation
+            # 1. Execute on-demand rotation (ONLY called here)
             response = self.client.rotate_key_on_demand(KeyId=self.key_id)
             returned_key_id = response.get("KeyId", self.key_id)
-
-            # 2. Fetch fresh metadata (read-only) to update rotation count & state
-            meta = self.get_kms_status()
-            rotation_count = meta.get("rotation_count", 2)
+            rot_time = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
             return {
                 "success": True,
                 "key_id": returned_key_id or self.key_id,  # Guaranteed SAME KMS Key ID
-                "rotation_count": rotation_count,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-                "message": "Key material rotated successfully in Real AWS KMS on-demand.",
+                "status": "Active",
                 "rotation_status": "Key material rotated",
+                "last_rotated": rot_time,
+                "timestamp": rot_time,
+                "message": "Key material rotated successfully in Real AWS KMS on-demand.",
                 "kms_mode": "REAL",
             }
 

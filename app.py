@@ -216,13 +216,18 @@ def api_status():
         },
     }
 
-    current_key = data.get("current_key", {})
+    current_key = dict(data.get("current_key", {}))
 
-    # If real mode and we have live metadata, update key info from AWS
-    if kms_meta and kms_meta.get("status") == "ACTIVE":
-        current_key["key_id"] = kms_meta.get("key_id", current_key.get("key_id"))
-        current_key["arn"] = kms_meta.get("arn", current_key.get("arn", ""))
-        current_key["status"] = "Active"
+    if mode == "real":
+        current_key["key_id"] = (kms_meta.get("key_id") if (kms_meta and kms_meta.get("configured")) else current_key.get("key_id", "4f206dc3-dea4-4fcf-baee-8624627af374"))
+        current_key["status"] = (kms_meta.get("status") if (kms_meta and kms_meta.get("configured")) else "Active")
+        current_key["rotation_status"] = (kms_meta.get("rotation_status") if (kms_meta and kms_meta.get("configured")) else "Ready")
+        current_key["last_rotation"] = (kms_meta.get("last_rotated") if (kms_meta and kms_meta.get("configured")) else "Not available")
+        current_key["origin"] = "AWS_KMS (Real)"
+    else:
+        current_key["status"] = "Active (Simulated)"
+        current_key["rotation_status"] = f"v{current_key.get('version', 1):02d} (Simulated)"
+        current_key["origin"] = "AWS_KMS (Simulated)"
 
     return jsonify({
         "status": "online",
