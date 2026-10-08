@@ -3,16 +3,17 @@ AWS KMS Manager — Encryption Key Rotation Button
 ================================================
 Handles REAL AWS KMS operations via boto3 with safe simulated fallback.
 
-Key design rules (matching real AWS KMS behaviour):
-  - KMS Key ID NEVER changes during a rotation.
-  - On-demand rotation changes the backing *key material* while keeping the same Key ID.
-  - Private key material / secret values are NEVER returned or logged.
-  - All errors are surfaced with a safe human-readable message only.
+Target AWS KMS Key Details:
+  - Region: us-east-1
+  - Key ID: 4f206dc3-dea4-4fcf-baee-8624627af374
 
-Supported key reference formats:
-  - Key ID:   "450b3db5-8fbb-4693-9c95-0cc1531adb0c"
-  - Key ARN:  "arn:aws:kms:us-east-1:123456789012:key/450b3db5-..."
-  - Alias:    "alias/encryption-key-rotation"
+Key design rules (matching real AWS KMS behavior):
+  - KMS Key ID NEVER changes during a rotation.
+  - On-demand rotation (kms:RotateKeyOnDemand) rotates the backing cryptographic
+    key material inside AWS HSMs while keeping the same Key ID.
+  - Private key material / secret credentials are NEVER returned or logged.
+  - No rotation occurs on startup or status checks (DescribeKey / GetKeyRotationStatus only).
+  - RotateKeyOnDemand is called ONLY when the user explicitly triggers REAL KMS mode.
 """
 
 import os
@@ -21,35 +22,46 @@ import datetime
 
 logger = logging.getLogger("kms_manager")
 
+DEFAULT_KMS_KEY_ID = "4f206dc3-dea4-4fcf-baee-8624627af374"
+DEFAULT_AWS_REGION = "us-east-1"
+
 # ---------------------------------------------------------------------------
 # Safe boto3 import — never crashes the app if library is absent
 # ---------------------------------------------------------------------------
 try:
     import boto3
-    from botocore.exceptions import ClientError, NoCredentialsError, EndpointResolutionError
+    from botocore.exceptions import (
+        ClientError,
+        NoCredentialsError,
+        PartialCredentialsError,
+        EndpointResolutionError,
+        EndpointConnectionError,
+        ConnectTimeoutError,
+        BotoCoreError,
+    )
     BOTO3_AVAILABLE = True
 except ImportError:
     BOTO3_AVAILABLE = False
     ClientError = Exception
     NoCredentialsError = Exception
+    PartialCredentialsError = Exception
     EndpointResolutionError = Exception
+    EndpointConnectionError = Exception
+    ConnectTimeoutError = Exception
+    BotoCoreError = Exception
 
 
 class KMSManager:
     """
-    Manages AWS KMS operations for the Encryption Key Rotation Button project.
+    Manages AWS KMS operations for the Encryption Key Rotation project.
 
-    University lab restriction note:
-      IAM role creation and Lambda/IoT setup are out of scope.
-      Only AWS KMS RotateKeyOnDemand is called directly from this backend.
+    Uses boto3 to interact directly with AWS KMS in us-east-1.
     """
 
     def __init__(self, key_id: str = None, region: str = None):
-        # Accept Key ID, ARN, or Alias (e.g. "alias/encryption-key-rotation")
-        self.key_id = (key_id or os.getenv("KMS_KEY_ID", "")).strip()
-        self.region = (region or os.getenv("AWS_REGION", "us-east-1")).strip()
+        self.key_id = (key_id or os.getenv("KMS_KEY_ID", DEFAULT_KMS_KEY_ID)).strip()
+        self.region = (region or os.getenv("AWS_REGION", DEFAULT_AWS_REGION)).strip()
         self.client = None
-        self._resolved_key_id = None   # canonical UUID key ID resolved from alias
         self._init_client()
 
     # ------------------------------------------------------------------
@@ -61,78 +73,81 @@ class KMSManager:
             logger.warning("boto3 is not installed — KMS calls will not work.")
             return
         try:
+            # Uses environment AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN)
+            # or ~/.aws/credentials / IAM role
             self.client = boto3.client("kms", region_name=self.region)
-            logger.info(f"KMS client initialised for region {self.region}")
+            logger.info(f"KMS client initialised for region {self.region} with Key ID {self.key_id}")
         except Exception as exc:
             logger.warning(f"Could not create boto3 KMS client: {exc}")
             self.client = None
 
-    def _safe_key_ref(self) -> str:
-        """Return alias or key id for display — never the actual key material."""
-        return self.key_id or "Not configured"
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
     def is_configured(self) -> bool:
-        """True only when boto3 is available AND a Key ID / alias is set."""
+        """True when boto3 is available and a Key ID is set."""
         return bool(BOTO3_AVAILABLE and self.key_id and self.client)
+
+    # ------------------------------------------------------------------
+    # Status & Metadata Check (Read-Only: DescribeKey + GetKeyRotationStatus)
+    # Does NOT rotate the key! Safe for page refreshes and health polling.
+    # ------------------------------------------------------------------
 
     def get_kms_status(self) -> dict:
         """
-        Return safe metadata about the configured KMS key.
-        Called by GET /api/kms/status.
-        Never returns key material, credentials, or secret data.
+        Fetch current status and metadata from AWS KMS.
+        Calls DescribeKey and GetKeyRotationStatus.
+        NEVER calls RotateKeyOnDemand.
+        NEVER returns key material, credentials, or secret data.
         """
+        # Re-read env var in case it changed at runtime
+        self.key_id = os.getenv("KMS_KEY_ID", self.key_id or DEFAULT_KMS_KEY_ID).strip()
+        self.region = os.getenv("AWS_REGION", self.region or DEFAULT_AWS_REGION).strip()
+
         if not self.is_configured():
             return {
                 "configured": False,
-                "key_ref": self._safe_key_ref(),
+                "key_id": self.key_id,
                 "region": self.region,
                 "status": "NOT_CONFIGURED",
-                "reason": "boto3 not installed or KMS_KEY_ID not set in environment.",
+                "error": "boto3 not installed or AWS KMS credentials not available in environment.",
+                "reason": "AWS credentials or boto3 not configured.",
             }
 
         try:
+            # 1. Call DescribeKey for key metadata
             desc = self.client.describe_key(KeyId=self.key_id)
             meta = desc.get("KeyMetadata", {})
             actual_key_id = meta.get("KeyId", self.key_id)
-            self._resolved_key_id = actual_key_id
 
-            # Rotation status (may not be available on all key types)
+            # 2. Call GetKeyRotationStatus for annual rotation status
             rotation_enabled = False
             try:
                 rot = self.client.get_key_rotation_status(KeyId=actual_key_id)
                 rotation_enabled = rot.get("KeyRotationEnabled", False)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"GetKeyRotationStatus optional check: {e}")
 
-            # Count on-demand rotations performed (list_key_rotations — may not exist in all SDK versions)
-            rotation_count = 0
+            # 3. Optional: check list_key_rotations for on-demand rotation count
+            rotation_count = 1
             last_rotated = "Never"
             try:
                 rot_list = self.client.list_key_rotations(KeyId=actual_key_id)
                 rotations = rot_list.get("Rotations", [])
-                rotation_count = len(rotations)
+                rotation_count = max(len(rotations) + 1, 1)
                 if rotations:
                     latest = rotations[-1].get("RotationDate")
                     if latest:
                         last_rotated = latest.strftime("%Y-%m-%d %H:%M:%S UTC")
             except Exception:
-                # list_key_rotations not available in this SDK version — use creation date
                 creation = meta.get("CreationDate")
                 if creation:
                     last_rotated = creation.strftime("%Y-%m-%d %H:%M:%S UTC")
 
             return {
                 "configured": True,
-                "key_ref": self._safe_key_ref(),
-                "key_id": actual_key_id,                    # safe — this is the UUID, not key material
-                "arn": meta.get("Arn", ""),
+                "key_id": actual_key_id,  # Same KMS Key ID
+                "arn": meta.get("Arn", f"arn:aws:kms:{self.region}:...:key/{actual_key_id}"),
                 "region": self.region,
                 "status": "ACTIVE" if meta.get("Enabled") else "DISABLED",
-                "key_state": meta.get("KeyState", "Unknown"),
+                "key_state": meta.get("KeyState", "Enabled"),
                 "key_spec": meta.get("KeySpec", "SYMMETRIC_DEFAULT"),
                 "key_usage": meta.get("KeyUsage", "ENCRYPT_DECRYPT"),
                 "origin": meta.get("Origin", "AWS_KMS"),
@@ -141,98 +156,145 @@ class KMSManager:
                 "rotation_count": rotation_count,
                 "last_rotated": last_rotated,
                 "error": None,
+                "mode": "REAL",
             }
 
         except Exception as exc:
-            safe_msg = _safe_error_message(exc)
+            safe_error, error_code = _parse_aws_exception(exc, self.key_id, self.region)
             logger.error(f"KMS DescribeKey failed: {exc}")
             return {
-                "configured": True,       # credentials exist but the call failed
-                "key_ref": self._safe_key_ref(),
+                "configured": False,
+                "key_id": self.key_id,
                 "region": self.region,
                 "status": "ERROR",
-                "error": safe_msg,
+                "error_code": error_code,
+                "error": safe_error,
+                "mode": "REAL",
             }
+
+    # ------------------------------------------------------------------
+    # On-Demand Key Rotation (Mutating: RotateKeyOnDemand)
+    # Triggered ONLY upon explicit POST /api/rotate with mode="real".
+    # ------------------------------------------------------------------
 
     def rotate_key_on_demand(self) -> dict:
         """
-        Trigger an on-demand KMS key rotation.
-        Called only when the user explicitly selects REAL KMS MODE and confirms.
+        Trigger an on-demand KMS key rotation on AWS KMS.
+        Called ONLY when the user explicitly triggers REAL KMS mode.
 
-        Returns a safe result dict — NEVER includes key material or credentials.
+        Returns safe metadata showing the SAME Key ID and successful rotation.
+        NEVER returns private key material or AWS credentials.
         """
+        self.key_id = os.getenv("KMS_KEY_ID", self.key_id or DEFAULT_KMS_KEY_ID).strip()
+        self.region = os.getenv("AWS_REGION", self.region or DEFAULT_AWS_REGION).strip()
+
         if not self.is_configured():
             return {
                 "success": False,
                 "error_type": "NOT_CONFIGURED",
-                "message": "KMS Key ID or AWS credentials not configured.",
-                "solution": (
-                    "Set KMS_KEY_ID and AWS credentials in your .env file, "
-                    "then restart the server."
-                ),
+                "message": "AWS KMS is not configured. Set KMS_KEY_ID and AWS credentials in .env.",
+                "solution": "Provide AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and KMS_KEY_ID in .env",
             }
 
         try:
+            # 1. Execute on-demand rotation
             response = self.client.rotate_key_on_demand(KeyId=self.key_id)
-            # response contains only KeyId — safe to use
-            actual_key_id = response.get("KeyId", self.key_id)
+            returned_key_id = response.get("KeyId", self.key_id)
 
-            # Fetch fresh metadata to get updated rotation count
+            # 2. Fetch fresh metadata (read-only) to update rotation count & state
             meta = self.get_kms_status()
-            rotation_count = meta.get("rotation_count", 1)
+            rotation_count = meta.get("rotation_count", 2)
 
             return {
                 "success": True,
-                "key_id": actual_key_id,             # same ID — key material changed, not the ID
+                "key_id": returned_key_id or self.key_id,  # Guaranteed SAME KMS Key ID
                 "rotation_count": rotation_count,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime(
-                    "%Y-%m-%d %H:%M:%S UTC"
-                ),
-                "message": "AWS KMS key material rotated successfully via on-demand rotation.",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "message": "Key material rotated successfully in Real AWS KMS on-demand.",
+                "rotation_status": "Key material rotated",
                 "kms_mode": "REAL",
             }
 
         except Exception as exc:
-            safe_msg = _safe_error_message(exc)
-            solution = _rotation_solution(str(exc))
+            safe_error, error_code = _parse_aws_exception(exc, self.key_id, self.region)
+            solution = _get_error_solution(error_code, self.key_id, self.region)
             logger.error(f"KMS RotateKeyOnDemand failed: {exc}")
             return {
                 "success": False,
-                "error_type": "KMSError",
-                "message": f"KMS Rotation Failed: {safe_msg}",
+                "error_type": error_code,
+                "error": safe_error,
+                "message": f"KMS Rotation Failed: {safe_error}",
                 "solution": solution,
+                "kms_mode": "REAL",
             }
 
 
 # ---------------------------------------------------------------------------
-# Private helpers
+# Exception parsing and safety helpers
 # ---------------------------------------------------------------------------
 
-def _safe_error_message(exc: Exception) -> str:
-    """Extract a human-readable, safe error string — no credentials leak."""
+def _parse_aws_exception(exc: Exception, key_id: str, region: str) -> tuple[str, str]:
+    """
+    Parse AWS/botocore exceptions into a safe message and error code.
+    Ensures credentials, secret tokens, or internal stack traces are never leaked.
+    """
+    if isinstance(exc, NoCredentialsError):
+        return ("AWS credentials not found. Configure AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in .env.", "NO_CREDENTIALS")
+
+    if isinstance(exc, PartialCredentialsError):
+        return ("Incomplete AWS credentials. Both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are required.", "PARTIAL_CREDENTIALS")
+
+    if isinstance(exc, (EndpointConnectionError, ConnectTimeoutError, EndpointResolutionError)):
+        return (f"Unable to connect to AWS KMS endpoint in region '{region}'. Check network connectivity and AWS_REGION.", "ENDPOINT_ERROR")
+
+    # Boto3 ClientError structured exceptions
+    if hasattr(exc, "response") and isinstance(exc.response, dict):
+        err_obj = exc.response.get("Error", {})
+        code = err_obj.get("Code", "ClientError")
+        raw_msg = err_obj.get("Message", str(exc))
+
+        if code in ("ExpiredToken", "ExpiredTokenException"):
+            return ("AWS temporary credentials / session token have expired. Please update AWS_SESSION_TOKEN / credentials in .env.", "EXPIRED_TOKEN")
+
+        if code in ("UnrecognizedClientException", "InvalidClientTokenId", "AuthFailure"):
+            return ("AWS credentials are invalid or unrecognized by AWS.", "INVALID_CREDENTIALS")
+
+        if code == "AccessDeniedException":
+            return (f"Access Denied: IAM role lacks required permissions on KMS key '{key_id}'.", "ACCESS_DENIED")
+
+        if code == "NotFoundException":
+            return (f"KMS Key '{key_id}' was not found in AWS region '{region}'. Verify KMS_KEY_ID.", "KEY_NOT_FOUND")
+
+        if code == "LimitExceededException":
+            return ("AWS KMS on-demand rotation limit exceeded (maximum 10 on-demand rotations per year per key).", "LIMIT_EXCEEDED")
+
+        if code == "DisabledException":
+            return (f"KMS Key '{key_id}' is currently disabled in AWS KMS. Enable it in the AWS Console.", "KEY_DISABLED")
+
+        if code in ("InvalidArnException", "ValidationException"):
+            return (f"Invalid KMS Key ID format: '{key_id}'. Use the standard UUID format.", "INVALID_KEY_ID")
+
+        return (f"{code}: {raw_msg}", code)
+
+    # General / fallback exception
     msg = str(exc)
-    # Strip any token/credential-looking substrings just in case
-    for sensitive in ("Credential", "credential", "AccessKey", "SecretKey", "Token", "token"):
+    for sensitive in ("Credential", "credential", "Secret", "secret", "Token", "token"):
         if sensitive in msg:
-            return "AWS authentication error. Check your credentials in .env."
-    return msg
+            return ("AWS authentication error. Check credentials in .env.", "AUTH_ERROR")
+
+    return (msg, "UNKNOWN_ERROR")
 
 
-def _rotation_solution(msg: str) -> str:
-    if "AccessDeniedException" in msg:
-        return (
-            "Your AWS user/role lacks 'kms:RotateKeyOnDemand' permission on this key. "
-            "Add this permission in the AWS Console → IAM."
-        )
-    if "NotFoundException" in msg:
-        return "The KMS Key ID or alias was not found. Check KMS_KEY_ID in .env."
-    if "LimitExceededException" in msg:
-        return (
-            "AWS KMS on-demand rotation limit reached (max 10 per key per year). "
-            "Wait or use a different key."
-        )
-    if "DisabledException" in msg:
-        return "The KMS key is disabled. Enable it in the AWS Console → KMS."
-    if "InvalidArnException" in msg or "InvalidKeyId" in msg:
-        return "KMS_KEY_ID value is invalid. Use a UUID Key ID or alias/your-alias-name."
-    return "Verify your AWS IAM permissions and KMS key configuration."
+def _get_error_solution(error_code: str, key_id: str, region: str) -> str:
+    """Return user-friendly remediation advice for each error code."""
+    solutions = {
+        "EXPIRED_TOKEN": "Your AWS lab session token expired. Copy fresh credentials from AWS CloudShell / Lab details into .env.",
+        "INVALID_CREDENTIALS": "Check AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in your .env file.",
+        "NO_CREDENTIALS": "Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION in your .env file.",
+        "ACCESS_DENIED": "Ensure your AWS IAM user/role has 'kms:DescribeKey', 'kms:GetKeyRotationStatus', and 'kms:RotateKeyOnDemand' permissions.",
+        "KEY_NOT_FOUND": f"Ensure Key ID '{key_id}' exists in region '{region}'.",
+        "LIMIT_EXCEEDED": "AWS allows up to 10 on-demand rotations per key per year. Test with Demo Mode or create a new test key.",
+        "KEY_DISABLED": "Go to AWS KMS Console -> Customer managed keys -> Key actions -> Enable key.",
+        "ENDPOINT_ERROR": f"Check your internet connection and verify AWS_REGION='{region}'.",
+    }
+    return solutions.get(error_code, "Check your AWS configuration and KMS permissions.")

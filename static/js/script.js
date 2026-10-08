@@ -6,7 +6,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     let currentAppMode = 'demo';
     let isRotating = false;
-    let activeKeyId = '450b3db5-8fbb-4693-9c95-0cc1531adb0c';
+    let activeKeyId = '4f206dc3-dea4-4fcf-baee-8624627af374';
     let activeKeyVersion = 1;
 
     // Elements - Mode & Notifications
@@ -148,7 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 bannerMsg.innerText = data.error || data.reason || 'KMS_KEY_ID or AWS credentials not found in .env. Real KMS calls will fail until configured.';
             } else {
                 configNoticeBanner.style.display = 'none';
-                showToast(`REAL KMS MODE active (Key: ${data.key_ref || 'alias/encryption-key-rotation'})`);
+                showToast(`REAL KMS MODE active (Key ID: ${data.key_id || '4f206dc3-dea4-4fcf-baee-8624627af374'})`);
             }
         } catch (e) {
             console.error(e);

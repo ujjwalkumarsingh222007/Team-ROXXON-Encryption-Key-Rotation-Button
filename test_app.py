@@ -2,6 +2,7 @@ import unittest
 import json
 import os
 from app import app, load_data, save_data
+from kms import KMSManager, _parse_aws_exception, _get_error_solution, DEFAULT_KMS_KEY_ID
 
 class AppTestCase(unittest.TestCase):
     def setUp(self):
@@ -24,6 +25,8 @@ class AppTestCase(unittest.TestCase):
         self.assertIn('aws_services', data)
         self.assertIn('current_key', data)
         self.assertIn('device', data)
+        # Verify default key is the real KMS key ID
+        self.assertEqual(data['current_key']['key_id'], '4f206dc3-dea4-4fcf-baee-8624627af374')
 
     def test_kms_status_endpoint(self):
         response = self.client.get('/api/kms/status')
@@ -32,9 +35,10 @@ class AppTestCase(unittest.TestCase):
         self.assertIn('configured', data)
         self.assertIn('status', data)
         self.assertIn('mode', data)
-        # Ensure private key material is NEVER exposed
+        # Ensure private key material or credentials are NEVER exposed
         self.assertNotIn('key_material', data)
         self.assertNotIn('secret_access_key', data)
+        self.assertNotIn('AWS_SECRET_ACCESS_KEY', data)
 
     def test_device_status_endpoint(self):
         response = self.client.get('/api/device-status')
@@ -56,7 +60,7 @@ class AppTestCase(unittest.TestCase):
         data = json.loads(response.data)
         self.assertTrue(data['success'])
         self.assertEqual(data['status'], 'SUCCESS')
-        self.assertIn('key_id', data)
+        self.assertEqual(data['key_id'], '4f206dc3-dea4-4fcf-baee-8624627af374')
         self.assertIn('version', data)
         self.assertEqual(data['kms_mode'], 'SIMULATED')
         self.assertTrue(len(data['steps']) > 0)
@@ -108,6 +112,30 @@ class AppTestCase(unittest.TestCase):
         data_after = load_data()
         self.assertEqual(data_after["current_key"]["key_id"], orig_key_id)
         self.assertEqual(data_after["current_key"]["version"], orig_version + 1)
+
+    def test_kms_error_parsing_and_safety(self):
+        # Test error code parsing
+        class MockBotoClientError(Exception):
+            def __init__(self, code, message):
+                self.response = {"Error": {"Code": code, "Message": message}}
+
+        # 1. Expired token
+        msg, code = _parse_aws_exception(MockBotoClientError("ExpiredToken", "The security token included in the request is expired"), DEFAULT_KMS_KEY_ID, "us-east-1")
+        self.assertEqual(code, "EXPIRED_TOKEN")
+        self.assertIn("expired", msg.lower())
+
+        # 2. Access Denied
+        msg, code = _parse_aws_exception(MockBotoClientError("AccessDeniedException", "User is not authorized"), DEFAULT_KMS_KEY_ID, "us-east-1")
+        self.assertEqual(code, "ACCESS_DENIED")
+        self.assertIn("Access Denied", msg)
+
+        # 3. Not Found
+        msg, code = _parse_aws_exception(MockBotoClientError("NotFoundException", "Key not found"), DEFAULT_KMS_KEY_ID, "us-east-1")
+        self.assertEqual(code, "KEY_NOT_FOUND")
+
+        # 4. Solutions are provided
+        sol = _get_error_solution("EXPIRED_TOKEN", DEFAULT_KMS_KEY_ID, "us-east-1")
+        self.assertIn("expired", sol.lower())
 
 if __name__ == '__main__':
     unittest.main()

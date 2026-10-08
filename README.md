@@ -50,10 +50,10 @@ To overcome these constraints, this project uses a **hybrid architecture**:
 ### Mode 2: REAL KMS MODE (Live AWS KMS)
 - Enabled by selecting **REAL KMS** on the frontend or setting `APP_MODE=real` in `.env`.
 - Invokes AWS KMS API `kms:RotateKeyOnDemand` on your Customer Managed Key:
-  - Alias: `alias/encryption-key-rotation` (or direct Key ID UUID).
+  - Key ID: `4f206dc3-dea4-4fcf-baee-8624627af374`
   - Region: `us-east-1`.
 - Protected by a **Safety Confirmation Modal** before invoking live cloud operations.
-- Key ID **remains constant** while backing key material rotates in AWS HSM.
+- Key ID **remains constant** (`4f206dc3-dea4-4fcf-baee-8624627af374`) while backing key material rotates in AWS HSM.
 - Returns only safe metadata (status, version, timestamp) — **zero cryptographic key material or credentials are ever exposed**.
 
 ---
@@ -89,8 +89,8 @@ AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 # Optional: AWS Academy / Learner Lab Session Token
 AWS_SESSION_TOKEN=
 
-# AWS KMS Key Alias or UUID
-KMS_KEY_ID=alias/encryption-key-rotation
+# AWS KMS Key ID (Direct Customer Managed Key ID)
+KMS_KEY_ID=4f206dc3-dea4-4fcf-baee-8624627af374
 
 # Simulated Device Identifier
 DEVICE_ID=ESP32-001
@@ -136,18 +136,18 @@ http://127.0.0.1:5000
    - Click **ROTATE ENCRYPTION KEY** to observe the exact failure isolation.
 
 ### B. Testing Real KMS Mode
-1. In your AWS Account (`us-east-1`), create a Symmetric KMS Key:
-   - Alias: `alias/encryption-key-rotation`
+1. In your AWS Account (`us-east-1`), verify your Symmetric KMS Key exists:
+   - Key ID: `4f206dc3-dea4-4fcf-baee-8624627af374`
    - Key Spec: `SYMMETRIC_DEFAULT`
    - Key Usage: `ENCRYPT_DECRYPT`
-2. Add your AWS credentials and key alias to `.env`.
+2. Add your AWS credentials and `KMS_KEY_ID=4f206dc3-dea4-4fcf-baee-8624627af374` to `.env`.
 3. Switch the top-right toggle to **REAL KMS**.
 4. Click **ROTATE ENCRYPTION KEY**.
 5. Confirm the action in the safety dialog.
-6. The backend executes `kms:RotateKeyOnDemand` against AWS KMS and displays the verified rotation version.
+6. The backend executes `kms:RotateKeyOnDemand` against AWS KMS and displays the verified rotation version while keeping the same Key ID.
 
 ### C. Running Automated Unit Tests
-Run the 9-test test suite:
+Run the 10-test test suite:
 ```bash
 python test_app.py
 ```

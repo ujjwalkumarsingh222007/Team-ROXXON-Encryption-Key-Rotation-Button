@@ -83,10 +83,10 @@ def load_data() -> dict:
         os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
         default_data = {
             "current_key": {
-                "key_id": os.getenv("KMS_KEY_ID", "450b3db5-8fbb-4693-9c95-0cc1531adb0c"),
+                "key_id": os.getenv("KMS_KEY_ID", "4f206dc3-dea4-4fcf-baee-8624627af374"),
                 "arn": (
                     f"arn:aws:kms:{os.getenv('AWS_REGION','us-east-1')}"
-                    ":748291038472:key/450b3db5-8fbb-4693-9c95-0cc1531adb0c"
+                    ":748291038472:key/4f206dc3-dea4-4fcf-baee-8624627af374"
                 ),
                 "status": "Active",
                 "version": 1,
@@ -211,7 +211,7 @@ def api_status():
             "key_id": (
                 kms_meta.get("key_id") if kms_meta else data.get("current_key", {}).get("key_id", "")
             ),
-            "key_ref": kms_mgr.key_id or "alias/encryption-key-rotation",
+            "key_ref": kms_mgr.key_id or "4f206dc3-dea4-4fcf-baee-8624627af374",
             "note": "REAL AWS KMS — only service called directly in this prototype",
         },
     }
@@ -264,8 +264,8 @@ def api_kms_status():
             "mode": "demo",
             "configured": kms_mgr.is_configured(),
             "simulated": True,
-            "key_ref": kms_mgr.key_id or "alias/encryption-key-rotation",
-            "key_id": current_key.get("key_id", "450b3db5-8fbb-4693-9c95-0cc1531adb0c"),
+            "key_ref": kms_mgr.key_id or "4f206dc3-dea4-4fcf-baee-8624627af374",
+            "key_id": current_key.get("key_id", "4f206dc3-dea4-4fcf-baee-8624627af374"),
             "status": "Simulation Mode",
             "note": (
                 "Demo mode: all KMS operations are simulated locally. "
@@ -530,9 +530,9 @@ def api_rotate():
                     "Check your .env file."
                 ),
                 "solution": (
-                    "Set KMS_KEY_ID=alias/encryption-key-rotation and ensure "
-                    "AWS credentials are available (env vars, ~/.aws/credentials, "
-                    "or IAM instance profile)."
+                    "Set KMS_KEY_ID=4f206dc3-dea4-4fcf-baee-8624627af374 and ensure "
+                    "AWS credentials are available in .env, ~/.aws/credentials, "
+                    "or environment variables."
                 ),
                 "kms_mode": "real",
             }), 400
